@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="zh">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Typewriter Plan</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div id="app">
+      <!-- 计划牌 -->
+      <div class="board">
+        <button id="close" class="close" title="关闭">×</button>
+        <div class="board-title" data-tauri-drag-region>
+          <span id="ptitle">今天的计划</span>
+          <span id="prog">0 / 0</span>
+        </div>
+        <ul id="tasks"></ul>
+        <div class="board-foot">
+          <span id="saved" class="saved"></span>
+        </div>
+      </div>
+
+      <!-- 像素卡比（拖动手柄） -->
+      <div class="pet" id="pet" title="拖我移动窗口" data-tauri-drag-region></div>
+    </div>
+    <script type="module" src="main.js"></script>
+  </body>
+</html>

@@ -1,0 +1,190 @@
+/* Transparent frameless desktop-pet window. Only the board + pet are visible. */
+:root {
+  --board: rgba(28, 31, 42, 0.94);
+  --line: rgba(255, 255, 255, 0.09);
+  --text: #e6e8ec;
+  --muted: #8b90a0;
+  --pink: #f7a8cd;
+  --ok: #4cc38a;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: transparent; /* real transparency (macOSPrivateApi) */
+  color: var(--text);
+  font-family: -apple-system, "SF Pro Text", "PingFang SC", system-ui, sans-serif;
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+  user-select: none;
+  cursor: default;
+}
+
+#app {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  padding: 8px 10px 4px;
+  gap: 0;
+}
+
+/* ---------- 计划牌 ---------- */
+.board {
+  position: relative;
+  width: 272px;
+  background: var(--board);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 12px 14px 10px;
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(8px);
+  z-index: 2;
+}
+/* 点卡比收起/展开任务牌：用 visibility 保留占位，卡比不位移 */
+.board.collapsed { visibility: hidden; }
+.board::after { /* 指向宠物的小尖角 */
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: -9px;
+  transform: translateX(-50%) rotate(45deg);
+  width: 18px;
+  height: 18px;
+  background: var(--board);
+  border-right: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.close {
+  position: absolute;
+  top: 8px;
+  right: 10px;
+  width: 18px;
+  height: 18px;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--muted);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.35;
+  transition: opacity 0.15s;
+}
+.board:hover .close { opacity: 1; }
+.close:hover { color: #fff; background: rgba(255, 255, 255, 0.08); }
+
+.board-title {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+  padding-right: 16px;
+  cursor: grab;
+}
+.board-title:active { cursor: grabbing; }
+#ptitle {
+  font-size: 12px;
+  font-weight: 700;
+  color: #cdd2dc;
+  letter-spacing: 0.3px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#prog {
+  font-size: 11px;
+  color: var(--muted);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  flex: 0 0 auto;
+  margin-left: 8px;
+}
+
+/* ---------- 三条任务 ---------- */
+#tasks { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 11px;
+  cursor: pointer;
+  transition: all 0.28s cubic-bezier(0.4, 0, 0.2, 1);
+  border: 1px solid transparent;
+}
+.row.done { opacity: 0.5; }
+.row.done .label { text-decoration: line-through; color: var(--muted); }
+.row.active {
+  background: rgba(247, 168, 205, 0.12);
+  border-color: rgba(247, 168, 205, 0.55);
+  transform: scale(1.03);
+}
+.row.next { opacity: 0.6; cursor: default; }
+.row.alldone { justify-content: center; cursor: default; opacity: 0.85; padding: 10px; }
+.row.alldone .tag { background: rgba(255, 255, 255, 0.06); color: var(--muted); }
+
+.tag {
+  font-size: 9px;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 6px;
+  flex: 0 0 auto;
+  letter-spacing: 0.3px;
+}
+.row.done .tag { background: rgba(76, 195, 138, 0.18); color: #7ee0ac; }
+.row.active .tag { background: rgba(247, 168, 205, 0.24); color: #ffc9e0; }
+.row.next .tag { background: rgba(255, 255, 255, 0.08); color: #9aa0b0; }
+
+.check {
+  width: 19px;
+  height: 19px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  border: 2px solid #6a7080;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s;
+  background: transparent;
+}
+.row.active .check { border-color: var(--pink); }
+.row.done .check { background: var(--ok); border-color: var(--ok); }
+.check svg { opacity: 0; transition: opacity 0.2s; }
+.row.done .check svg { opacity: 1; }
+
+.label { font-size: 13px; color: var(--text); font-weight: 500; line-height: 1.3; }
+.row.active .label { font-weight: 600; }
+
+/* ---------- 页脚 ---------- */
+.board-foot {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  min-height: 12px;
+  margin-top: 9px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+.saved { font-size: 10.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+/* ---------- 像素卡比 ---------- */
+.pet {
+  margin-top: 2px;
+  cursor: grab;
+  animation: bob 3s steps(2, end) infinite;
+  filter: drop-shadow(0 6px 8px rgba(0, 0, 0, 0.35));
+  line-height: 0;
+}
+.pet:active { cursor: grabbing; }
+/* Let mousedown land on the .pet div (a drag region) instead of an SVG <rect>,
+   otherwise the window can't be dragged by the pet's body. */
+.pet svg { display: block; image-rendering: pixelated; shape-rendering: crispEdges; pointer-events: none; }
+@keyframes bob { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-6px); } }
+.pet.happy { animation: hop 0.5s steps(3, end); }
+@keyframes hop { 0% { transform: translateY(0); } 40% { transform: translateY(-16px); } 100% { transform: translateY(0); } }
