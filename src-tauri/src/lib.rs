@@ -1,11 +1,74 @@
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::PathBuf;
+use tauri::Manager;
 
 /// Read a UTF-8 text file. Used on startup to restore the last plan.
 #[tauri::command]
 fn read_text(path: String) -> Result<String, String> {
     fs::read_to_string(&path).map_err(|e| e.to_string())
+}
+
+/// Where the app keeps its own config file (plan-file override lives here).
+fn config_file(app: &tauri::AppHandle) -> Option<PathBuf> {
+    app.path()
+        .app_config_dir()
+        .ok()
+        .map(|d| d.join("config.json"))
+}
+
+/// The default plan file, derived from the user's home dir — no hardcoded
+/// per-user absolute path in the source.
+fn default_plan_path(app: &tauri::AppHandle) -> String {
+    let home = app
+        .path()
+        .home_dir()
+        .unwrap_or_else(|_| PathBuf::from("."));
+    home.join("Documents")
+        .join("obsidian")
+        .join("Study Plans")
+        .join("current.md")
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// Resolve the plan file. Precedence: TYPEWRITER_PLAN env var, then a
+/// `plan_file` entry in the app's config.json, then the home-based default.
+fn resolve_plan_path(app: &tauri::AppHandle) -> String {
+    if let Ok(p) = std::env::var("TYPEWRITER_PLAN") {
+        if !p.trim().is_empty() {
+            return p;
+        }
+    }
+    if let Some(cfg) = config_file(app) {
+        if let Ok(text) = fs::read_to_string(&cfg) {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+                if let Some(p) = v.get("plan_file").and_then(|p| p.as_str()) {
+                    if !p.trim().is_empty() {
+                        return p.to_string();
+                    }
+                }
+            }
+        }
+    }
+    default_plan_path(app)
+}
+
+/// Persist a chosen plan file into config.json (used by the tray picker).
+fn save_plan_path(app: &tauri::AppHandle, plan_file: &str) -> Result<(), String> {
+    let cfg = config_file(app).ok_or_else(|| "no config dir".to_string())?;
+    if let Some(dir) = cfg.parent() {
+        fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    let body = serde_json::json!({ "plan_file": plan_file }).to_string();
+    fs::write(&cfg, body).map_err(|e| e.to_string())
+}
+
+/// The frontend asks for the resolved plan path on startup and on each poll,
+/// so changing it (env / config / tray picker) switches the shown plan live.
+#[tauri::command]
+fn plan_path(app: tauri::AppHandle) -> String {
+    resolve_plan_path(&app)
 }
 
 /// Write `contents` to `path` atomically: write to a temp file in the same
@@ -108,6 +171,8 @@ pub fn run() {
                 .with_state_flags(StateFlags::POSITION)
                 .build(),
         )
+        // Native file picker for the tray "Choose plan file…" item.
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
             use tauri::tray::TrayIconBuilder;
@@ -122,6 +187,7 @@ pub fn run() {
             // Menu-bar (tray) icon with a small menu: show/hide + start-at-login
             // toggle + quit. The check item reflects the current autostart state.
             let toggle = MenuItem::with_id(app, "toggle", "Show / hide Kirby", true, None::<&str>)?;
+            let choose = MenuItem::with_id(app, "choose_plan", "Choose plan file…", true, None::<&str>)?;
             let autostart_on = app.autolaunch().is_enabled().unwrap_or(false);
             let start_at_login = CheckMenuItem::with_id(
                 app,
@@ -136,6 +202,7 @@ pub fn run() {
                 app,
                 &[
                     &toggle,
+                    &choose,
                     &start_at_login,
                     &PredefinedMenuItem::separator(app)?,
                     &quit,
@@ -158,6 +225,22 @@ pub fn run() {
                             }
                         }
                     }
+                    "choose_plan" => {
+                        use tauri_plugin_dialog::DialogExt;
+                        let app2 = app.clone();
+                        app.dialog()
+                            .file()
+                            .add_filter("Markdown", &["md"])
+                            .pick_file(move |resp| {
+                                if let Some(fp) = resp {
+                                    if let Ok(pb) = fp.into_path() {
+                                        // The frontend re-resolves the path on its
+                                        // next poll and switches to the new plan.
+                                        let _ = save_plan_path(&app2, &pb.to_string_lossy());
+                                    }
+                                }
+                            });
+                    }
                     "start_at_login" => {
                         let mgr = app.autolaunch();
                         let now_on = if mgr.is_enabled().unwrap_or(false) {
@@ -176,7 +259,7 @@ pub fn run() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![read_text, write_atomic])
+        .invoke_handler(tauri::generate_handler![read_text, write_atomic, plan_path])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

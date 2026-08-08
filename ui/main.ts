@@ -7,11 +7,16 @@
 // It auto-refreshes when the file changes, and writes your progress back.
 //
 //  ┌─────────────────────────────────────────────────────────────────────┐
-//  │  CHANGE YOUR VAULT PATH HERE                                          │
+//  │  WHICH FILE DOES THE PET SHOW?                                        │
 //  └─────────────────────────────────────────────────────────────────────┘
-const VAULT_PATH = "/Users/yyukin0/Documents/obsidian"; // <-- your Obsidian vault root
-const SUBDIR = "Study Plans";                            // <-- subfolder for the plan
-const PLAN_FILE = `${VAULT_PATH}/${SUBDIR}/current.md`;  // the one file the pet shows
+// The path is resolved by the Rust `plan_path` command, in this order:
+//   1. the TYPEWRITER_PLAN environment variable,
+//   2. a `plan_file` entry in the app's config.json (set via the tray's
+//      "Choose plan file…" item),
+//   3. the home-based default ~/Documents/obsidian/Study Plans/current.md.
+// We fetch it on startup and re-check it each poll, so picking a new file
+// switches the shown plan live.
+let planFile = "";
 // ============================================================================
 
 const AUTOSAVE_DELAY_MS = 800; // debounce before writing progress to disk
@@ -443,10 +448,10 @@ function scheduleSave(): void {
 }
 async function save(): Promise<void> {
   if (saveTimer !== undefined) { clearTimeout(saveTimer); saveTimer = undefined; }
-  if (state.items.length === 0) return;
+  if (state.items.length === 0 || !planFile) return;
   const md = toMarkdown();
   try {
-    await invoke("write_atomic", { path: PLAN_FILE, contents: md });
+    await invoke("write_atomic", { path: planFile, contents: md });
     lastContent = md; // so our own write doesn't look like an external edit
   } catch (e) {
     console.error(e);
@@ -476,9 +481,18 @@ function adopt(items: Item[], created: string): void {
   applyMood();
 }
 
-async function loadFile(): Promise<void> {
+// Ask Rust for the resolved plan path (env / config.json / default).
+async function resolvePlanPath(): Promise<void> {
   try {
-    const text = await invoke("read_text", { path: PLAN_FILE });
+    const p = await invoke("plan_path");
+    if (typeof p === "string" && p) planFile = p;
+  } catch { /* keep the last known path */ }
+}
+
+async function loadFile(): Promise<void> {
+  if (!planFile) { await resolvePlanPath(); }
+  try {
+    const text = await invoke("read_text", { path: planFile });
     lastContent = text;
     const { fm, body } = splitFrontmatter(text);
     adopt(parse(body), fm.created || "");
@@ -495,8 +509,12 @@ async function loadFile(): Promise<void> {
 // unless we have a pending save (don't clobber the user's in-flight clicks).
 async function poll(): Promise<void> {
   if (saveTimer !== undefined) return;
+  // Pick up a plan-file switch (tray picker / config edit) between polls.
+  const prev = planFile;
+  await resolvePlanPath();
+  if (planFile !== prev) { await loadFile(); return; }
   try {
-    const text = await invoke("read_text", { path: PLAN_FILE });
+    const text = await invoke("read_text", { path: planFile });
     if (text !== lastContent) await loadFile();
   } catch {
     if (lastContent !== "") await loadFile(); // file was removed
@@ -554,5 +572,8 @@ $("quit").addEventListener("click", async (e) => {
   try { await T.window.getCurrentWindow().close(); } catch (err) { console.error(err); }
 });
 
-loadFile();
-setInterval(poll, POLL_MS);
+(async () => {
+  await resolvePlanPath();
+  await loadFile();
+  setInterval(poll, POLL_MS);
+})();

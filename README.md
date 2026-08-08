@@ -47,17 +47,18 @@ typewriter-plan/
 └── package.json
 ```
 
-## Change your Obsidian vault path
+## Choose which file the pet shows
 
-Open [`ui/main.ts`](ui/main.ts) — the path is right at the top, clearly marked:
+No source edit required. The plan file is resolved at runtime, in this order:
 
-```ts
-const VAULT_PATH = "/Users/yyukin0/Documents/obsidian"; // <-- your vault root
-const SUBDIR = "Study Plans";                            // <-- subfolder for plans
-```
+1. **`TYPEWRITER_PLAN`** environment variable, if set.
+2. **`plan_file`** in the app's `config.json` (in the OS app-config dir, e.g.
+   `~/Library/Application Support/com.typewriter.plan/config.json`). The tray
+   menu's **"Choose plan file…"** item writes this for you via a native picker.
+3. The default **`~/Documents/obsidian/Study Plans/current.md`**, derived from
+   your home directory.
 
-Change `VAULT_PATH` to your vault, save, and re-run. Files are written to
-`<VAULT_PATH>/<SUBDIR>/<slug>.md`.
+Picking a new file takes effect within a couple of seconds — no restart needed.
 
 ## Run in development
 
