@@ -95,6 +95,13 @@ under `bundle/dmg/`.
   - `- `, `* `, `1.`, `2)` → checklist items
   - `- [x]` / `- [ ]` → items with their checked state preserved
   - blank lines / other text → kept as-is in the file
+- **Use the prompt template** — copy the prompt in [`PROMPT.md`](PROMPT.md) into
+  Claude's project instructions or memory. After that, just say things like:
+  - "帮我列一份明天 Kirby 计划，5 道链表 Medium"
+  - "Kirby，把今天的计划改成 3 道树 + 2 道图"
+  - "追加 3 道 DP"
+
+  Claude will know the exact file path and format, and will preserve your existing progress.
 - **Progress is linear** — the card always shows just the 3 lines around where
   you are. Complete the middle one to roll forward; un-check the top one to roll
   back. The `X / Y` counter in the corner tracks completed / total.

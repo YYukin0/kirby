@@ -44,9 +44,12 @@ html, body {
   box-shadow: 0 14px 34px rgba(0, 0, 0, 0.45);
   backdrop-filter: blur(8px);
   z-index: 2;
+  transform-origin: 50% 100%; /* shrink downward, toward the pet */
+  transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.3s ease;
 }
-/* 点卡比收起/展开任务牌：用 visibility 保留占位，卡比不位移 */
-.board.collapsed { visibility: hidden; }
+/* 点卡比收起：牌子朝卡比方向缩小淡出（像被“吸”进去）。用 transform 不改布局，
+   所以下方的卡比一动不动。 */
+.board.collapsed { transform: scale(0.12); opacity: 0; pointer-events: none; }
 .board::after { /* 指向宠物的小尖角 */
   content: "";
   position: absolute;
@@ -81,22 +84,14 @@ html, body {
 
 .board-title {
   display: flex;
-  justify-content: space-between;
+  justify-content: flex-end;
   align-items: center;
   margin-bottom: 8px;
   padding-right: 16px;
   cursor: grab;
 }
 .board-title:active { cursor: grabbing; }
-#ptitle {
-  font-size: 12px;
-  font-weight: 700;
-  color: #cdd2dc;
-  letter-spacing: 0.3px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
+#ptitle { display: none; }
 #prog {
   font-size: 11px;
   color: var(--muted);
@@ -174,17 +169,50 @@ html, body {
 .saved { font-size: 10.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
 
 /* ---------- 像素卡比 ---------- */
+/* Every motion (breathe / blink / hop / inhale / sleep) is driven from main.ts
+   with the Web Animations API. .pet is the window drag region; its children are
+   pointer-events:none so a mousedown lands on .pet and can drag the window. */
 .pet {
+  position: relative;
   margin-top: 2px;
+  width: 112px;
+  height: 105px;
   cursor: grab;
-  animation: bob 3s steps(2, end) infinite;
-  filter: drop-shadow(0 6px 8px rgba(0, 0, 0, 0.35));
-  line-height: 0;
 }
 .pet:active { cursor: grabbing; }
-/* Let mousedown land on the .pet div (a drag region) instead of an SVG <rect>,
-   otherwise the window can't be dragged by the pet's body. */
-.pet svg { display: block; image-rendering: pixelated; shape-rendering: crispEdges; pointer-events: none; }
-@keyframes bob { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-6px); } }
-.pet.happy { animation: hop 0.5s steps(3, end); }
-@keyframes hop { 0% { transform: translateY(0); } 40% { transform: translateY(-16px); } 100% { transform: translateY(0); } }
+.pet > * { pointer-events: none; }
+
+.pet-shadow {
+  position: absolute;
+  left: 50%;
+  bottom: -2px;
+  transform: translateX(-50%);
+  width: 68px;
+  height: 12px;
+  background: rgba(0, 0, 0, 0.22);
+  border-radius: 50%;
+  filter: blur(1.5px);
+  opacity: 0.22;
+}
+.pet-body {
+  position: absolute;
+  left: 0;
+  bottom: 6px;
+  width: 100%;
+  transform-origin: 50% 100%; /* squash & stretch anchored to the feet */
+  line-height: 0;
+  filter: drop-shadow(0 5px 6px rgba(0, 0, 0, 0.3));
+  transition: opacity 0.4s ease; /* gentle dim when falling asleep */
+}
+.pet-body svg { display: block; margin: 0 auto; image-rendering: pixelated; shape-rendering: crispEdges; }
+.pet-fx { position: absolute; inset: 0; overflow: visible; }
+
+/* Expression layers — main.ts fades the right one in. */
+.lyr-cheek, .lyr-blink, .lyr-happy, .lyr-sleep { opacity: 0; }
+.zzz {
+  font-family: -apple-system, system-ui, sans-serif;
+  font-weight: 700;
+  color: #cfd6ea;
+  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.3);
+  line-height: 1;
+}

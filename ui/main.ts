@@ -42,17 +42,37 @@ const PET_MAP = [
 const PET_COLORS: Record<string, string> = {
   p: "#f7a8cd", e: "#2a2c66", w: "#ffffff", f: "#ef5f86", m: "#c85c88",
 };
+const PET_S = 7;
+const px = (x: number, y: number, c: string) =>
+  `<rect x="${x * PET_S}" y="${y * PET_S}" width="${PET_S}" height="${PET_S}" fill="${c}"/>`;
+
+// The sprite ships as layers: the body (with open eyes baked in) plus overlay
+// groups for each expression. main.ts fades a group in/out to change the face
+// (blink / happy ^_^ / sleeping ‿) and to puff the cheeks when inhaling.
 function buildPet(): string {
-  const S = 7;
   const cols = PET_MAP[0].length, rows = PET_MAP.length;
-  let svg = `<svg width="${cols * S}" height="${rows * S}" viewBox="0 0 ${cols * S} ${rows * S}" xmlns="http://www.w3.org/2000/svg">`;
+  const P = PET_COLORS.p, E = PET_COLORS.e, BLUSH = "#f9c3da";
+  let body = "";
   for (let r = 0; r < rows; r++)
     for (let c = 0; c < cols; c++) {
       const ch = PET_MAP[r][c];
-      if (ch === ".") continue;
-      svg += `<rect x="${c * S}" y="${r * S}" width="${S}" height="${S}" fill="${PET_COLORS[ch]}"/>`;
+      if (ch !== ".") body += px(c, r, PET_COLORS[ch]);
     }
-  return svg + "</svg>";
+  // Paint over the open eyes (cols 5,6,9,10 · rows 5-7) then draw a new face.
+  let cover = "";
+  for (const c of [5, 6, 9, 10]) for (const r of [5, 6, 7]) cover += px(c, r, P);
+  const draw = (pts: number[][]) => pts.map(([x, y]) => px(x, y, E)).join("");
+  const blink = cover + draw([[5, 7], [6, 7], [9, 7], [10, 7]]);            // — —
+  const happy = cover + draw([[4, 7], [5, 6], [6, 7], [9, 7], [10, 6], [11, 7]]); // ^ ^
+  const sleep = cover + draw([[4, 6], [5, 7], [6, 6], [9, 6], [10, 7], [11, 6]]); // ‿ ‿
+  const cheek = [[2, 8], [3, 8], [12, 8], [13, 8]].map(([x, y]) => px(x, y, BLUSH)).join("");
+  return `<svg width="${cols * PET_S}" height="${rows * PET_S}" viewBox="0 0 ${cols * PET_S} ${rows * PET_S}" xmlns="http://www.w3.org/2000/svg">`
+    + `<g>${body}</g>`
+    + `<g class="lyr-cheek">${cheek}</g>`
+    + `<g class="lyr-blink">${blink}</g>`
+    + `<g class="lyr-happy">${happy}</g>`
+    + `<g class="lyr-sleep">${sleep}</g>`
+    + `</svg>`;
 }
 
 // --- Data model -------------------------------------------------------------
@@ -82,6 +102,15 @@ const tasksEl = $("tasks");
 const savedEl = $("saved");
 const petEl = $("pet");
 
+function cleanTaskText(text: string): string {
+  return text
+    .replace(/\*\*([^*]+)\*\*/g, "$1")   // bold
+    .replace(/__([^_]+)__/g, "$1")       // bold alt
+    .replace(/_([^_]+)_/g, "$1")         // italic
+    .replace(/`([^`]+)`/g, "$1")         // inline code
+    .trim();
+}
+
 // --- Parsing ----------------------------------------------------------------
 function parse(text: string): Item[] {
   const items: Item[] = [];
@@ -90,12 +119,12 @@ function parse(text: string): Item[] {
     if (line.trim() === "") { items.push({ kind: "blank" }); continue; }
     const h = line.match(/^(#{1,6})\s+(.*)$/);
     if (h) { items.push({ kind: "heading", level: h[1].length, text: h[2].trim() }); continue; }
-    const cb = line.match(/^\s*[-*]\s+\[([ xX])\]\s+(.*)$/);
-    if (cb) { items.push({ kind: "task", initDone: cb[1].toLowerCase() === "x", text: cb[2].trim() }); continue; }
-    const bullet = line.match(/^\s*[-*]\s+(.*)$/);
-    if (bullet) { items.push({ kind: "task", initDone: false, text: bullet[1].trim() }); continue; }
+    const cb = line.match(/^\s*[-*+]\s+\[([ xX])\]\s+(.*)$/);
+    if (cb) { items.push({ kind: "task", initDone: cb[1].toLowerCase() === "x", text: cleanTaskText(cb[2].trim()) }); continue; }
+    const bullet = line.match(/^\s*[-*+]\s+(.*)$/);
+    if (bullet) { items.push({ kind: "task", initDone: false, text: cleanTaskText(bullet[1].trim()) }); continue; }
     const num = line.match(/^\s*\d+[.)]\s+(.*)$/);
-    if (num) { items.push({ kind: "task", initDone: false, text: num[1].trim() }); continue; }
+    if (num) { items.push({ kind: "task", initDone: false, text: cleanTaskText(num[1].trim()) }); continue; }
     items.push({ kind: "note", text: line.trim() });
   }
   return items;
@@ -154,15 +183,209 @@ function render(): void {
   if (state.cursor + 1 < total) tasksEl.appendChild(makeRow(state.cursor + 1, "next", "下一个"));
 }
 
-function cheer(): void {
-  petEl.classList.add("happy");
-  setTimeout(() => petEl.classList.remove("happy"), 500);
+// --- Pet animation controller -----------------------------------------------
+// Everything the pet does is driven here with the Web Animations API. Idle =
+// breathing + random blinks. Actions squash-hop with sparkles. When every task
+// is done the pet celebrates once, then curls up and sleeps (slow breathing,
+// closed eyes, floating Zzz) until you roll a task back and it yawns awake.
+type Mood = "awake" | "sleep";
+let mood: Mood = "awake";
+let breatheAnim: Animation | undefined;
+let zzzTimer: number | undefined;
+
+// Filled in during wire-up (after the sprite is injected).
+let petBody: HTMLElement, petFx: HTMLElement, petShadow: HTMLElement;
+let lyrCheek: SVGGElement, lyrBlink: SVGGElement, lyrHappy: SVGGElement, lyrSleep: SVGGElement;
+
+// Fade an expression layer in for `ms`, then back out.
+function flash(g: SVGGElement, ms: number): void {
+  g.style.opacity = "1";
+  window.setTimeout(() => { g.style.opacity = "0"; }, ms);
 }
+
+function startBreath(slow: boolean): void {
+  if (breatheAnim) breatheAnim.cancel();
+  const sx = slow ? 1.06 : 1.05, sy = slow ? 0.97 : 0.95;
+  breatheAnim = petBody.animate(
+    [{ transform: "scale(1,1)" }, { transform: `scale(${sx},${sy})` }, { transform: "scale(1,1)" }],
+    { duration: slow ? 4200 : 2600, iterations: Infinity, easing: "ease-in-out" },
+  );
+}
+
+// A transient squash-stretch hop. It layers over the infinite breathing and
+// hands control back to it when it finishes.
+function hop(height: number, dur: number): void {
+  petBody.animate([
+    { transform: "translateY(0) scale(1,1)" },
+    { transform: "translateY(0) scale(1.18,0.82)", offset: 0.14 },
+    { transform: `translateY(${-height}px) scale(0.9,1.1)`, offset: 0.5 },
+    { transform: "translateY(0) scale(1.12,0.88)", offset: 0.86 },
+    { transform: "translateY(0) scale(1,1)" },
+  ], { duration: dur, easing: "cubic-bezier(.3,.7,.3,1)" });
+  petShadow.animate([
+    { transform: "translateX(-50%) scale(1)", opacity: 0.22 },
+    { transform: "translateX(-50%) scale(0.7)", opacity: 0.1, offset: 0.5 },
+    { transform: "translateX(-50%) scale(1)", opacity: 0.22 },
+  ], { duration: dur, easing: "ease-in-out" });
+}
+
+// Little diamond particles bursting up out of the pet.
+function spark(n: number, colors: string[]): void {
+  for (let i = 0; i < n; i++) {
+    const s = document.createElement("div");
+    const size = 3 + Math.random() * 4;
+    s.style.cssText = `position:absolute;left:50%;top:36%;width:${size}px;height:${size}px;background:${colors[i % colors.length]};border-radius:1px;transform:rotate(45deg);`;
+    petFx.appendChild(s);
+    const ang = (-70 + Math.random() * 140) * Math.PI / 180, dist = 34 + Math.random() * 40;
+    const a = s.animate([
+      { transform: "translate(-50%,-50%) rotate(45deg) scale(1)", opacity: 1 },
+      { transform: `translate(${Math.sin(ang) * dist - 50}%,${-Math.cos(ang) * dist - 50}%) rotate(160deg) scale(0)`, opacity: 0 },
+    ], { duration: 560 + Math.random() * 260, easing: "cubic-bezier(.2,.6,.3,1)" });
+    a.onfinish = () => s.remove();
+  }
+}
+
+// Random blinking — runs forever but only shows while awake and visible.
+function blinkLoop(): void {
+  window.setTimeout(() => {
+    if (mood === "awake" && !document.hidden) flash(lyrBlink, 120);
+    blinkLoop();
+  }, 2200 + Math.random() * 2800);
+}
+
+// Floating "z" that drifts up and fades, spawned on a loop while sleeping.
+function spawnZ(): void {
+  const z = document.createElement("div");
+  z.className = "zzz";
+  z.textContent = "z";
+  z.style.cssText = `position:absolute;left:62%;top:26%;font-size:${9 + Math.random() * 5}px;`;
+  petFx.appendChild(z);
+  const a = z.animate([
+    { transform: "translate(0,0) rotate(-6deg)", opacity: 0 },
+    { transform: "translate(6px,-10px) rotate(4deg)", opacity: 0.9, offset: 0.3 },
+    { transform: "translate(16px,-30px) rotate(10deg)", opacity: 0 },
+  ], { duration: 1900, easing: "ease-out" });
+  a.onfinish = () => z.remove();
+}
+function startZzz(): void {
+  stopZzz();
+  const tick = () => { if (mood !== "sleep") return; spawnZ(); zzzTimer = window.setTimeout(tick, 1400); };
+  tick();
+}
+function stopZzz(): void {
+  if (zzzTimer !== undefined) { clearTimeout(zzzTimer); zzzTimer = undefined; }
+}
+
+// --- Mood transitions -------------------------------------------------------
+function enterSleep(celebrate: boolean): void {
+  if (mood === "sleep") return;
+  mood = "sleep";
+  const settle = () => {
+    lyrHappy.style.opacity = "0";
+    lyrBlink.style.opacity = "0";
+    lyrSleep.style.opacity = "1";
+    petBody.style.opacity = "0.92";
+    startBreath(true);
+    startZzz();
+  };
+  if (celebrate) {
+    lyrSleep.style.opacity = "0";
+    flash(lyrHappy, 1300);
+    hop(42, 720);
+    window.setTimeout(() => hop(20, 520), 260);
+    spark(12, ["#ffd76a", "#f7a8cd", "#7ee0ac", "#85b7eb"]);
+    window.setTimeout(() => spark(10, ["#ffd76a", "#f7a8cd", "#ef5f86"]), 160);
+    window.setTimeout(settle, 1350);
+  } else {
+    settle();
+  }
+}
+function enterAwake(yawn: boolean): void {
+  if (mood === "awake") return;
+  mood = "awake";
+  stopZzz();
+  lyrSleep.style.opacity = "0";
+  petBody.style.opacity = "1";
+  startBreath(false);
+  if (yawn) {
+    flash(lyrBlink, 220);
+    petBody.animate([
+      { transform: "scale(1,1)" },
+      { transform: "scale(0.9,1.16)", offset: 0.4 },
+      { transform: "scale(1.08,0.93)", offset: 0.72 },
+      { transform: "scale(1,1)" },
+    ], { duration: 760, easing: "ease-in-out" });
+  }
+}
+// Quietly sync the pet to the plan state (used after external file reloads).
+function applyMood(): void {
+  const done = state.taskIdx.length > 0 && state.cursor >= state.taskIdx.length;
+  if (done) enterSleep(false); else enterAwake(false);
+}
+
+// --- Interaction feedback ---------------------------------------------------
+function petComplete(): void {
+  flash(lyrHappy, 900);
+  hop(30, 560);
+  spark(8, ["#ffd76a", "#f7a8cd"]);
+}
+function petRollback(): void {
+  flash(lyrBlink, 300);
+  petBody.animate([
+    { transform: "translateX(0) rotate(0)" },
+    { transform: "translateX(-5px) rotate(-6deg)" },
+    { transform: "translateX(5px) rotate(6deg)" },
+    { transform: "translateX(-3px) rotate(-3deg)" },
+    { transform: "translateX(0) rotate(0)" },
+  ], { duration: 420, easing: "ease-in-out" });
+}
+// Inhale: puff the cheeks and body while the board gets "slurped" in (CSS).
+function puff(): void {
+  lyrCheek.style.opacity = "1";
+  if (mood === "awake") flash(lyrBlink, 160);
+  const a = petBody.animate([
+    { transform: "scale(1,1)" },
+    { transform: "scale(1.18,1.12)", offset: 0.4 },
+    { transform: "scale(1.18,1.12)", offset: 0.7 },
+    { transform: "scale(1,1)" },
+  ], { duration: 820, easing: "ease-in-out" });
+  a.onfinish = () => { lyrCheek.style.opacity = "0"; };
+}
+function exhale(): void {
+  petBody.animate([
+    { transform: "scale(1,1)" },
+    { transform: "scale(0.9,1.12)", offset: 0.4 },
+    { transform: "scale(1.05,0.96)", offset: 0.72 },
+    { transform: "scale(1,1)" },
+  ], { duration: 520, easing: "ease-in-out" });
+}
+// Quick "boing" when you grab the pet (a native window-drag starts here too).
+function pickup(): void {
+  petBody.animate([
+    { transform: "translateY(0) scale(1,1) rotate(0)" },
+    { transform: "translateY(-6px) scale(1.06,0.94) rotate(-4deg)", offset: 0.5 },
+    { transform: "translateY(0) scale(1,1) rotate(0)" },
+  ], { duration: 300, easing: "ease-out" });
+}
+
 function complete(): void {
-  if (state.cursor < state.taskIdx.length) { state.cursor++; cheer(); render(); scheduleSave(); }
+  if (state.cursor < state.taskIdx.length) {
+    state.cursor++;
+    if (state.cursor >= state.taskIdx.length) enterSleep(true);
+    else petComplete();
+    render();
+    scheduleSave();
+  }
 }
 function rollBack(): void {
-  if (state.cursor > 0) { state.cursor--; render(); scheduleSave(); }
+  if (state.cursor > 0) {
+    const wasDone = state.cursor >= state.taskIdx.length;
+    state.cursor--;
+    if (wasDone) enterAwake(true);
+    else petRollback();
+    render();
+    scheduleSave();
+  }
 }
 
 // --- Serialization (whole plan -> markdown) ---------------------------------
@@ -236,6 +459,7 @@ function adopt(items: Item[], created: string): void {
   }
   state = { title: firstHeading(items), created: created || fmtDate(new Date()), items, taskIdx, cursor };
   render();
+  applyMood();
 }
 
 async function loadFile(): Promise<void> {
@@ -267,11 +491,30 @@ async function poll(): Promise<void> {
 
 // --- Wire up ----------------------------------------------------------------
 const boardEl = document.querySelector(".board") as HTMLElement;
-petEl.innerHTML = buildPet();
-// Click the pet to collapse / expand the task board (drag still moves the
-// window). The pet itself stays put — no hop here.
+
+// The pet is a stack: a ground shadow, the sprite body (what we animate), and
+// an fx layer for sparkles / Zzz. Children are pointer-events:none so mousedown
+// falls through to #pet (the window drag region).
+petEl.innerHTML = `<div class="pet-shadow"></div><div class="pet-body">${buildPet()}</div><div class="pet-fx"></div>`;
+petShadow = petEl.querySelector(".pet-shadow") as HTMLElement;
+petBody = petEl.querySelector(".pet-body") as HTMLElement;
+petFx = petEl.querySelector(".pet-fx") as HTMLElement;
+lyrCheek = petBody.querySelector(".lyr-cheek") as unknown as SVGGElement;
+lyrBlink = petBody.querySelector(".lyr-blink") as unknown as SVGGElement;
+lyrHappy = petBody.querySelector(".lyr-happy") as unknown as SVGGElement;
+lyrSleep = petBody.querySelector(".lyr-sleep") as unknown as SVGGElement;
+
+startBreath(false);
+blinkLoop();
+
+// Grabbing the pet gives a little boing (a native drag also starts here).
+petEl.addEventListener("mousedown", () => pickup());
+// A plain click collapses / expands the board. The pet stays put; the board is
+// scaled away with a transform so it keeps its layout box (see styles.css).
 petEl.addEventListener("click", () => {
+  const collapsing = !boardEl.classList.contains("collapsed");
   boardEl.classList.toggle("collapsed");
+  if (collapsing) puff(); else exhale();
 });
 $("close").addEventListener("click", async () => {
   try { await T.window.getCurrentWindow().close(); } catch (e) { console.error(e); }
