@@ -19,6 +19,10 @@
 let planFile = "";
 // ============================================================================
 
+import {
+  Item, parse, splitFrontmatter, firstHeading, deriveCursor, serializePlan, fmtDate,
+} from "./plan.js";
+
 const AUTOSAVE_DELAY_MS = 800; // debounce before writing progress to disk
 const POLL_MS = 2500;          // how often to check the file for LLM edits
 const IDLE_NAP_MS = 3 * 60 * 1000; // idle this long (awake, not all-done) → nap
@@ -110,12 +114,8 @@ function buildPet(): string {
 }
 
 // --- Data model -------------------------------------------------------------
-type Item =
-  | { kind: "heading"; level: number; text: string }
-  | { kind: "task"; text: string; initDone: boolean }
-  | { kind: "note"; text: string }
-  | { kind: "blank" };
-
+// Item, parsing, cursor derivation and serialization live in ./plan.ts (pure,
+// unit-tested). This file wires them to the DOM and the pet.
 interface PlanState {
   title: string;
   created: string;
@@ -136,49 +136,10 @@ const progEl = $("prog");
 const tasksEl = $("tasks");
 const petEl = $("pet");
 
-function cleanTaskText(text: string): string {
-  return text
-    .replace(/\*\*([^*]+)\*\*/g, "$1")   // bold
-    .replace(/__([^_]+)__/g, "$1")       // bold alt
-    .replace(/_([^_]+)_/g, "$1")         // italic
-    .replace(/`([^`]+)`/g, "$1")         // inline code
-    .trim();
-}
-
-// --- Parsing ----------------------------------------------------------------
-function parse(text: string): Item[] {
-  const items: Item[] = [];
-  for (const raw of text.split("\n")) {
-    const line = raw.replace(/\s+$/, "");
-    if (line.trim() === "") { items.push({ kind: "blank" }); continue; }
-    const h = line.match(/^(#{1,6})\s+(.*)$/);
-    if (h) { items.push({ kind: "heading", level: h[1].length, text: h[2].trim() }); continue; }
-    const cb = line.match(/^\s*[-*+]\s+\[([ xX])\]\s+(.*)$/);
-    if (cb) { items.push({ kind: "task", initDone: cb[1].toLowerCase() === "x", text: cleanTaskText(cb[2].trim()) }); continue; }
-    const bullet = line.match(/^\s*[-*+]\s+(.*)$/);
-    if (bullet) { items.push({ kind: "task", initDone: false, text: cleanTaskText(bullet[1].trim()) }); continue; }
-    const num = line.match(/^\s*\d+[.)]\s+(.*)$/);
-    if (num) { items.push({ kind: "task", initDone: false, text: cleanTaskText(num[1].trim()) }); continue; }
-    items.push({ kind: "note", text: line.trim() });
-  }
-  return items;
-}
-
 function taskText(taskPos: number): string {
   const it = state.items[state.taskIdx[taskPos]];
   return it && it.kind === "task" ? it.text : "";
 }
-
-// Title = first heading in the plan. No fabricated fallback name.
-function firstHeading(items: Item[]): string {
-  const h = items.find((i) => i.kind === "heading") as { text: string } | undefined;
-  return h && h.text ? h.text : "";
-}
-
-// --- Dates ------------------------------------------------------------------
-const pad = (n: number) => (n < 10 ? "0" + n : String(n));
-const fmtDate = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-const fmtDateTime = (d: Date) => `${fmtDate(d)} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 
 // --- Rendering the 3-row window ---------------------------------------------
 function checkSvg(): string {
@@ -533,44 +494,9 @@ function rollBack(): void {
   }
 }
 
-// --- Serialization (whole plan -> markdown) ---------------------------------
+// --- Serialization ----------------------------------------------------------
 function toMarkdown(): string {
-  const total = state.taskIdx.length;
-  const fm = [
-    "---",
-    `title: ${state.title}`,
-    `created: ${state.created}`,
-    `updated: ${fmtDateTime(new Date())}`,
-    `progress: ${state.cursor}/${total}`,
-    "---",
-  ];
-  // task done state is driven purely by the linear cursor
-  const donePos = new Map<number, boolean>();
-  state.taskIdx.forEach((_, pos) => donePos.set(state.taskIdx[pos], pos < state.cursor));
-
-  const body: string[] = [];
-  state.items.forEach((it, idx) => {
-    if (it.kind === "blank") body.push("");
-    else if (it.kind === "heading") body.push("#".repeat(it.level) + " " + it.text);
-    else if (it.kind === "note") body.push(it.text);
-    else body.push(`- [${donePos.get(idx) ? "x" : " "}] ${it.text}`);
-  });
-  return fm.join("\n") + "\n\n" + body.join("\n") + "\n";
-}
-
-// --- Deserialization --------------------------------------------------------
-function splitFrontmatter(text: string): { fm: Record<string, string>; body: string } {
-  const lines = text.split("\n");
-  if (lines[0]?.trim() !== "---") return { fm: {}, body: text };
-  let end = -1;
-  for (let i = 1; i < lines.length; i++) if (lines[i].trim() === "---") { end = i; break; }
-  if (end === -1) return { fm: {}, body: text };
-  const fm: Record<string, string> = {};
-  for (let i = 1; i < end; i++) {
-    const m = lines[i].match(/^([\w-]+):\s*(.*)$/);
-    if (m) fm[m[1]] = m[2].trim();
-  }
-  return { fm, body: lines.slice(end + 1).join("\n").replace(/^\n+/, "") };
+  return serializePlan(state, new Date());
 }
 
 // --- Saving -----------------------------------------------------------------
@@ -592,22 +518,9 @@ async function save(): Promise<void> {
 
 // --- Load from the plan file ------------------------------------------------
 function adopt(items: Item[], created: string): void {
-  const taskIdx: number[] = [];
-  items.forEach((it, i) => { if (it.kind === "task") taskIdx.push(i); });
-  // cursor = number of leading completed tasks (first not-done task)
-  let cursor = taskIdx.length;
-  for (let pos = 0; pos < taskIdx.length; pos++) {
-    const it = items[taskIdx[pos]];
-    if (it.kind === "task" && !it.initDone) { cursor = pos; break; }
-  }
-  // A checked task sitting past that first gap means the file isn't linear.
-  // We keep the linear cursor but flag it so render() can warn the user before
-  // any save quietly rewrites those stray checks to unchecked.
-  let nonLinear = false;
-  for (let pos = cursor; pos < taskIdx.length; pos++) {
-    const it = items[taskIdx[pos]];
-    if (it.kind === "task" && it.initDone) { nonLinear = true; break; }
-  }
+  // deriveCursor keeps the linear cursor and flags a non-linear file (a checked
+  // task past the first gap) so render() can warn before a save squashes it.
+  const { taskIdx, cursor, nonLinear } = deriveCursor(items);
   state = { title: firstHeading(items), created: created || fmtDate(new Date()), items, taskIdx, cursor, nonLinear };
   render();
   applyMood();

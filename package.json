@@ -2,13 +2,15 @@
   "name": "typewriter-plan",
   "version": "0.1.0",
   "private": true,
+  "type": "module",
   "description": "Minimal Tauri desktop widget: paste a study plan, get a live checklist, auto-save to your Obsidian vault.",
   "scripts": {
     "build:ui": "tsc",
     "watch:ui": "tsc --watch",
     "tauri": "tauri",
     "dev": "tauri dev",
-    "build": "tauri build"
+    "build": "tauri build",
+    "test": "tsc && node --test \"test/**/*.test.mjs\""
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.0.0",
