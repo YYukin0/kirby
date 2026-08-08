@@ -221,6 +221,14 @@ html, body {
 /* Expression layers — main.ts fades the right one in. */
 .lyr-cheek, .lyr-blink, .lyr-happy, .lyr-sleep, .lyr-sleepy, .lyr-nightcap { opacity: 0; }
 .moon { line-height: 1; filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.35)); }
+
+/* Reduced motion: the pet's JS animations are gated in main.ts; here we drop
+   the CSS transitions too, so collapsing the board and swapping rows is instant
+   rather than an eased scale/slide. The state changes themselves still apply. */
+@media (prefers-reduced-motion: reduce) {
+  .board, .row, .check, .check svg { transition: none; }
+  .board.collapsed { transform: none; } /* just hide it, don't scale away */
+}
 .zzz {
   font-family: -apple-system, system-ui, sans-serif;
   font-weight: 700;

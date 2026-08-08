@@ -240,6 +240,12 @@ let lastInteraction = Date.now();
 let breatheAnim: Animation | undefined;
 let zzzTimer: number | undefined;
 
+// Honor the OS "reduce motion" setting: when off, we drop continuous/large
+// motion (breathing, hops, sparkles, drifting Zzz) and keep only instant state
+// switches (expressions, checkmarks, the still moon). Kept live via a listener.
+const reduceMotionMQ = window.matchMedia("(prefers-reduced-motion: reduce)");
+let motionOK = !reduceMotionMQ.matches;
+
 // Filled in during wire-up (after the sprite is injected).
 let petBody: HTMLElement, petFx: HTMLElement, petShadow: HTMLElement;
 let lyrCheek: SVGGElement, lyrBlink: SVGGElement, lyrHappy: SVGGElement, lyrSleep: SVGGElement;
@@ -253,7 +259,8 @@ function flash(g: SVGGElement, ms: number): void {
 }
 
 function startBreath(slow: boolean): void {
-  if (breatheAnim) breatheAnim.cancel();
+  if (breatheAnim) { breatheAnim.cancel(); breatheAnim = undefined; }
+  if (!motionOK) return; // no continuous breathing under reduced motion
   const sx = slow ? 1.06 : 1.05, sy = slow ? 0.97 : 0.95;
   breatheAnim = petBody.animate(
     [{ transform: "scale(1,1)" }, { transform: `scale(${sx},${sy})` }, { transform: "scale(1,1)" }],
@@ -264,6 +271,7 @@ function startBreath(slow: boolean): void {
 // A transient squash-stretch hop. It layers over the infinite breathing and
 // hands control back to it when it finishes.
 function hop(height: number, dur: number): void {
+  if (!motionOK) return;
   petBody.animate([
     { transform: "translateY(0) scale(1,1)" },
     { transform: "translateY(0) scale(1.18,0.82)", offset: 0.14 },
@@ -280,6 +288,7 @@ function hop(height: number, dur: number): void {
 
 // Little diamond particles bursting up out of the pet.
 function spark(n: number, colors: string[]): void {
+  if (!motionOK) return; // no confetti under reduced motion
   for (let i = 0; i < n; i++) {
     const s = document.createElement("div");
     const size = 3 + Math.random() * 4;
@@ -318,6 +327,7 @@ function spawnZ(): void {
 }
 function startZzz(): void {
   stopZzz();
+  if (!motionOK) return; // no drifting Zzz under reduced motion
   const tick = () => { if (mood !== "sleep") return; spawnZ(); zzzTimer = window.setTimeout(tick, 1400); };
   tick();
 }
@@ -365,6 +375,18 @@ function refreshTimeOfDay(): void {
   applySleepAura();
 }
 
+// React to the OS "reduce motion" toggle flipping while we're running.
+function applyMotionPreference(): void {
+  motionOK = !reduceMotionMQ.matches;
+  if (!motionOK) {
+    if (breatheAnim) { breatheAnim.cancel(); breatheAnim = undefined; }
+    stopZzz();
+  } else {
+    startBreath(mood === "sleep");
+  }
+  applySleepAura();
+}
+
 // --- Mood transitions -------------------------------------------------------
 function enterSleep(celebrate: boolean, reason: SleepReason = "done"): void {
   if (mood === "sleep") return;
@@ -403,7 +425,7 @@ function enterAwake(yawn: boolean): void {
   applyTimeVisuals(); // show bleary eyes if it's morning
   if (yawn) {
     flash(lyrBlink, 220);
-    petBody.animate([
+    if (motionOK) petBody.animate([
       { transform: "scale(1,1)" },
       { transform: "scale(0.9,1.16)", offset: 0.4 },
       { transform: "scale(1.08,0.93)", offset: 0.72 },
@@ -448,6 +470,7 @@ function petComplete(): void {
 }
 function petRollback(): void {
   flash(lyrBlink, 300);
+  if (!motionOK) return;
   petBody.animate([
     { transform: "translateX(0) rotate(0)" },
     { transform: "translateX(-5px) rotate(-6deg)" },
@@ -458,8 +481,9 @@ function petRollback(): void {
 }
 // Inhale: puff the cheeks and body while the board gets "slurped" in (CSS).
 function puff(): void {
-  lyrCheek.style.opacity = "1";
   if (mood === "awake") flash(lyrBlink, 160);
+  if (!motionOK) return;
+  lyrCheek.style.opacity = "1";
   const a = petBody.animate([
     { transform: "scale(1,1)" },
     { transform: "scale(1.18,1.12)", offset: 0.4 },
@@ -469,6 +493,7 @@ function puff(): void {
   a.onfinish = () => { lyrCheek.style.opacity = "0"; };
 }
 function exhale(): void {
+  if (!motionOK) return;
   petBody.animate([
     { transform: "scale(1,1)" },
     { transform: "scale(0.9,1.12)", offset: 0.4 },
@@ -478,6 +503,7 @@ function exhale(): void {
 }
 // Quick "boing" when you grab the pet (a native window-drag starts here too).
 function pickup(): void {
+  if (!motionOK) return;
   petBody.animate([
     { transform: "translateY(0) scale(1,1) rotate(0)" },
     { transform: "translateY(-6px) scale(1.06,0.94) rotate(-4deg)", offset: 0.5 },
@@ -647,6 +673,7 @@ lyrNightcap = petBody.querySelector(".lyr-nightcap") as unknown as SVGGElement;
 startBreath(false);
 blinkLoop();
 applyTimeVisuals(); // set the initial time-driven face
+reduceMotionMQ.addEventListener("change", applyMotionPreference);
 
 // Grabbing the pet gives a little boing (a native drag also starts here).
 // (left button only — right button opens the quit menu instead)
