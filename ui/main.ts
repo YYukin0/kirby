@@ -88,9 +88,10 @@ interface PlanState {
   items: Item[];
   taskIdx: number[]; // indices into items[] that are tasks, in order
   cursor: number;    // how many tasks are completed (linear progress)
+  nonLinear: boolean; // file had a checked task after an unchecked one
 }
 
-let state: PlanState = { title: "", created: "", items: [], taskIdx: [], cursor: 0 };
+let state: PlanState = { title: "", created: "", items: [], taskIdx: [], cursor: 0, nonLinear: false };
 let saveTimer: number | undefined;
 let lastContent = ""; // last file text we read or wrote — to detect external (LLM) edits
 
@@ -163,6 +164,15 @@ function render(): void {
   progEl.textContent = `${state.cursor} / ${total}`;
 
   tasksEl.innerHTML = "";
+  // The pet only tracks linear progress. If the file has a checked task after
+  // an unchecked one, say so out loud instead of silently collapsing the stray
+  // checks on the next save. The notice clears itself once the file is linear.
+  if (state.nonLinear) {
+    const li = document.createElement("li");
+    li.className = "row notice";
+    li.innerHTML = '<span class="tag">Linear progress only · out-of-order checks will be squared up when you click</span>';
+    tasksEl.appendChild(li);
+  }
   if (total === 0) {
     const li = document.createElement("li");
     li.className = "row alldone empty";
@@ -453,7 +463,15 @@ function adopt(items: Item[], created: string): void {
     const it = items[taskIdx[pos]];
     if (it.kind === "task" && !it.initDone) { cursor = pos; break; }
   }
-  state = { title: firstHeading(items), created: created || fmtDate(new Date()), items, taskIdx, cursor };
+  // A checked task sitting past that first gap means the file isn't linear.
+  // We keep the linear cursor but flag it so render() can warn the user before
+  // any save quietly rewrites those stray checks to unchecked.
+  let nonLinear = false;
+  for (let pos = cursor; pos < taskIdx.length; pos++) {
+    const it = items[taskIdx[pos]];
+    if (it.kind === "task" && it.initDone) { nonLinear = true; break; }
+  }
+  state = { title: firstHeading(items), created: created || fmtDate(new Date()), items, taskIdx, cursor, nonLinear };
   render();
   applyMood();
 }
@@ -468,7 +486,7 @@ async function loadFile(): Promise<void> {
   } catch {
     // File not there yet — empty state; keep polling so it appears once written.
     lastContent = "";
-    state = { title: "", created: "", items: [], taskIdx: [], cursor: 0 };
+    state = { title: "", created: "", items: [], taskIdx: [], cursor: 0, nonLinear: false };
     render();
   }
 }

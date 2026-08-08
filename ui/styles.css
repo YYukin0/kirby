@@ -108,6 +108,16 @@ html, body {
 .row.next { opacity: 0.6; cursor: default; }
 .row.alldone { justify-content: center; cursor: default; opacity: 0.85; padding: 10px; }
 .row.alldone .tag { background: rgba(255, 255, 255, 0.06); color: var(--muted); }
+/* Warns that a non-linear file will be squared up to linear progress. */
+.row.notice { justify-content: center; cursor: default; padding: 7px 10px; }
+.row.notice .tag {
+  background: rgba(255, 199, 102, 0.16);
+  color: #ffcf7a;
+  letter-spacing: 0.2px;
+  line-height: 1.35;
+  text-align: center;
+  white-space: normal;
+}
 
 .tag {
   font-size: 9px;
