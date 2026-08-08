@@ -24,6 +24,23 @@ const POLL_MS = 2500;          // how often to check the file for LLM edits
 const IDLE_NAP_MS = 3 * 60 * 1000; // idle this long (awake, not all-done) → nap
 const NAP_TICK_MS = 20 * 1000;     // how often we check for idleness
 
+// --- Time of day ------------------------------------------------------------
+// Kirby shifts mood by the local clock: a deeper sleep look late at night and a
+// bleary "just woke up" face in the early morning. Bounds are constants so
+// they're easy to tweak. The clock is injectable so the sandbox can pin an hour.
+type TimeSeg = "night" | "morning" | "day";
+const NIGHT_START = 22; // 22:00–05:00 → night
+const NIGHT_END = 5;
+const MORNING_END = 9;  // 05:00–09:00 → morning; otherwise day
+const TIME_TICK_MS = 60 * 1000; // re-evaluate the segment every minute
+let clock: () => Date = () => new Date();
+function timeOfDay(): TimeSeg {
+  const h = clock().getHours();
+  if (h >= NIGHT_START || h < NIGHT_END) return "night";
+  if (h < MORNING_END) return "morning";
+  return "day";
+}
+
 // --- Tauri bridge (withGlobalTauri = true, so no bundler / npm import needed) ---
 const T: any = (window as any).__TAURI__;
 const invoke: (cmd: string, args?: Record<string, unknown>) => Promise<any> = T.core.invoke;
@@ -73,12 +90,22 @@ function buildPet(): string {
   const happy = cover + draw([[4, 7], [5, 6], [6, 7], [9, 7], [10, 6], [11, 7]]); // ^ ^
   const sleep = cover + draw([[4, 6], [5, 7], [6, 6], [9, 6], [10, 7], [11, 6]]); // ‿ ‿
   const cheek = [[2, 8], [3, 8], [12, 8], [13, 8]].map(([x, y]) => px(x, y, BLUSH)).join("");
+  // Deep-night sleep: a little floppy nightcap on the crown with a white pom.
+  const CAP = "#6d7fd0";
+  const cap = [[4, 2], [5, 2], [6, 2], [7, 2], [8, 2], [9, 2], [10, 2], [5, 1], [6, 1], [7, 1], [8, 1], [9, 1], [6, 0], [7, 0], [8, 0], [9, 0], [10, 1]]
+    .map(([x, y]) => px(x, y, CAP)).join("") + px(11, 1, "#ffffff");
+  // Early-morning "just woke up": heavy lower lids + faint under-eye bags.
+  const BAG = "#d98bb0";
+  const sleepy = cover + draw([[5, 7], [6, 7], [9, 7], [10, 7]])
+    + [[5, 8], [10, 8]].map(([x, y]) => px(x, y, BAG)).join("");
   return `<svg width="${cols * PET_S}" height="${rows * PET_S}" viewBox="0 0 ${cols * PET_S} ${rows * PET_S}" xmlns="http://www.w3.org/2000/svg">`
     + `<g>${body}</g>`
     + `<g class="lyr-cheek">${cheek}</g>`
     + `<g class="lyr-blink">${blink}</g>`
     + `<g class="lyr-happy">${happy}</g>`
     + `<g class="lyr-sleep">${sleep}</g>`
+    + `<g class="lyr-sleepy">${sleepy}</g>`
+    + `<g class="lyr-nightcap">${cap}</g>`
     + `</svg>`;
 }
 
@@ -216,6 +243,8 @@ let zzzTimer: number | undefined;
 // Filled in during wire-up (after the sprite is injected).
 let petBody: HTMLElement, petFx: HTMLElement, petShadow: HTMLElement;
 let lyrCheek: SVGGElement, lyrBlink: SVGGElement, lyrHappy: SVGGElement, lyrSleep: SVGGElement;
+let lyrSleepy: SVGGElement, lyrNightcap: SVGGElement;
+let moonEl: HTMLElement | undefined; // static night-sleep 🌙 (replaces drifting Zzz)
 
 // Fade an expression layer in for `ms`, then back out.
 function flash(g: SVGGElement, ms: number): void {
@@ -296,6 +325,46 @@ function stopZzz(): void {
   if (zzzTimer !== undefined) { clearTimeout(zzzTimer); zzzTimer = undefined; }
 }
 
+// A still moon that stands in for the drifting Zzz during a deep-night sleep.
+function showMoon(): void {
+  if (moonEl) return;
+  moonEl = document.createElement("div");
+  moonEl.className = "moon";
+  moonEl.textContent = "🌙";
+  moonEl.style.cssText = "position:absolute;left:64%;top:12%;font-size:16px;";
+  petFx.appendChild(moonEl);
+}
+function hideMoon(): void {
+  if (moonEl) { moonEl.remove(); moonEl = undefined; }
+}
+
+// The sleep "aura": drifting Zzz by day, a still moon at night, nothing awake.
+// Idempotent, so the once-a-minute time tick can call it freely.
+function applySleepAura(): void {
+  if (mood !== "sleep") { stopZzz(); hideMoon(); return; }
+  if (timeOfDay() === "night") {
+    stopZzz();
+    showMoon();
+  } else {
+    hideMoon();
+    if (zzzTimer === undefined) startZzz();
+  }
+}
+
+// Persistent, time-driven expression layers: nightcap while sleeping at night,
+// bleary eyes while awake in the morning.
+function applyTimeVisuals(): void {
+  const t = timeOfDay();
+  lyrNightcap.style.opacity = t === "night" && mood === "sleep" ? "1" : "0";
+  lyrSleepy.style.opacity = t === "morning" && mood === "awake" ? "1" : "0";
+}
+
+// Recomputed on a timer so crossing midnight / dawn updates without a restart.
+function refreshTimeOfDay(): void {
+  applyTimeVisuals();
+  applySleepAura();
+}
+
 // --- Mood transitions -------------------------------------------------------
 function enterSleep(celebrate: boolean, reason: SleepReason = "done"): void {
   if (mood === "sleep") return;
@@ -307,7 +376,8 @@ function enterSleep(celebrate: boolean, reason: SleepReason = "done"): void {
     lyrSleep.style.opacity = "1";
     petBody.style.opacity = "0.92";
     startBreath(true);
-    startZzz();
+    applyTimeVisuals(); // nightcap on if it's late
+    applySleepAura();   // Zzz by day, moon at night
   };
   if (celebrate) {
     lyrSleep.style.opacity = "0";
@@ -326,10 +396,11 @@ function enterAwake(yawn: boolean): void {
   mood = "awake";
   sleepReason = null;
   lastInteraction = Date.now(); // a fresh wake resets the idle clock
-  stopZzz();
+  applySleepAura(); // awake ⇒ stop Zzz + hide moon
   lyrSleep.style.opacity = "0";
   petBody.style.opacity = "1";
   startBreath(false);
+  applyTimeVisuals(); // show bleary eyes if it's morning
   if (yawn) {
     flash(lyrBlink, 220);
     petBody.animate([
@@ -570,9 +641,12 @@ lyrCheek = petBody.querySelector(".lyr-cheek") as unknown as SVGGElement;
 lyrBlink = petBody.querySelector(".lyr-blink") as unknown as SVGGElement;
 lyrHappy = petBody.querySelector(".lyr-happy") as unknown as SVGGElement;
 lyrSleep = petBody.querySelector(".lyr-sleep") as unknown as SVGGElement;
+lyrSleepy = petBody.querySelector(".lyr-sleepy") as unknown as SVGGElement;
+lyrNightcap = petBody.querySelector(".lyr-nightcap") as unknown as SVGGElement;
 
 startBreath(false);
 blinkLoop();
+applyTimeVisuals(); // set the initial time-driven face
 
 // Grabbing the pet gives a little boing (a native drag also starts here).
 // (left button only — right button opens the quit menu instead)
@@ -619,7 +693,9 @@ $("quit").addEventListener("click", async (e) => {
 (window as any).__kirbyTest = {
   get mood() { return mood; },
   get sleepReason() { return sleepReason; },
+  get timeOfDay() { return timeOfDay(); },
   setLastInteraction(t: number) { lastInteraction = t; },
+  setClock(fn: (() => Date) | null) { clock = fn || (() => new Date()); refreshTimeOfDay(); },
   napCheck,
   bumpInteraction,
 };
@@ -629,4 +705,5 @@ $("quit").addEventListener("click", async (e) => {
   await loadFile();
   setInterval(poll, POLL_MS);
   setInterval(napCheck, NAP_TICK_MS);
+  setInterval(refreshTimeOfDay, TIME_TICK_MS);
 })();

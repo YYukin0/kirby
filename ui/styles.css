@@ -219,7 +219,8 @@ html, body {
 .pet-fx { position: absolute; inset: 0; overflow: visible; }
 
 /* Expression layers — main.ts fades the right one in. */
-.lyr-cheek, .lyr-blink, .lyr-happy, .lyr-sleep { opacity: 0; }
+.lyr-cheek, .lyr-blink, .lyr-happy, .lyr-sleep, .lyr-sleepy, .lyr-nightcap { opacity: 0; }
+.moon { line-height: 1; filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.35)); }
 .zzz {
   font-family: -apple-system, system-ui, sans-serif;
   font-weight: 700;
