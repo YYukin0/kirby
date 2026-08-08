@@ -83,32 +83,39 @@ mod tests {
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
-            // A native Edit menu is required so ⌘C/⌘V/⌘X work inside the
-            // textarea on macOS (frameless windows otherwise have no menu),
-            // plus ⌘Q to quit since the window has no title bar.
-            use tauri::menu::{Menu, PredefinedMenuItem, Submenu};
-            let app_menu = Submenu::with_items(
-                app,
-                "Typewriter Plan",
-                true,
-                &[&PredefinedMenuItem::quit(app, None)?],
-            )?;
-            let edit_menu = Submenu::with_items(
-                app,
-                "Edit",
-                true,
-                &[
-                    &PredefinedMenuItem::undo(app, None)?,
-                    &PredefinedMenuItem::redo(app, None)?,
-                    &PredefinedMenuItem::separator(app)?,
-                    &PredefinedMenuItem::cut(app, None)?,
-                    &PredefinedMenuItem::copy(app, None)?,
-                    &PredefinedMenuItem::paste(app, None)?,
-                    &PredefinedMenuItem::select_all(app, None)?,
-                ],
-            )?;
-            let menu = Menu::with_items(app, &[&app_menu, &edit_menu])?;
-            app.set_menu(menu)?;
+            use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+            use tauri::tray::TrayIconBuilder;
+            use tauri::Manager;
+
+            // Live in the macOS menu bar only: no Dock icon, no app menu. The
+            // always-on-top pet window stays visible regardless.
+            #[cfg(target_os = "macos")]
+            let _ = app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+
+            // Menu-bar (tray) icon with a small menu: show/hide + quit.
+            let toggle = MenuItem::with_id(app, "toggle", "Show / hide Kirby", true, None::<&str>)?;
+            let quit = PredefinedMenuItem::quit(app, Some("Quit Kirby"))?;
+            let menu = Menu::with_items(app, &[&toggle, &PredefinedMenuItem::separator(app)?, &quit])?;
+
+            TrayIconBuilder::with_id("kirby-tray")
+                .icon(app.default_window_icon().unwrap().clone())
+                .tooltip("Kirby — study plan")
+                .menu(&menu)
+                .show_menu_on_left_click(true)
+                .on_menu_event(|app, event| {
+                    if event.id().as_ref() == "toggle" {
+                        if let Some(w) = app.get_webview_window("main") {
+                            if w.is_visible().unwrap_or(false) {
+                                let _ = w.hide();
+                            } else {
+                                let _ = w.show();
+                                let _ = w.set_focus();
+                            }
+                        }
+                    }
+                })
+                .build(app)?;
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![read_text, write_atomic])
