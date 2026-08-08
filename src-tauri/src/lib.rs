@@ -91,6 +91,7 @@ mod tests {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     use tauri_plugin_autostart::MacosLauncher;
+    use tauri_plugin_window_state::StateFlags;
 
     tauri::Builder::default()
         // Register autostart before setup so the tray can read/toggle it. On
@@ -99,6 +100,14 @@ pub fn run() {
             MacosLauncher::LaunchAgent,
             None,
         ))
+        // Remember where the pet was dragged. The window is a fixed-size,
+        // transparent, borderless pet, so persist only its POSITION — never
+        // size/maximized/fullscreen, which would fight the 300x360 layout.
+        .plugin(
+            tauri_plugin_window_state::Builder::default()
+                .with_state_flags(StateFlags::POSITION)
+                .build(),
+        )
         .setup(|app| {
             use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
             use tauri::tray::TrayIconBuilder;
