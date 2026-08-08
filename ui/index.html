@@ -10,19 +10,20 @@
     <div id="app">
       <!-- 计划牌 -->
       <div class="board">
-        <button id="close" class="close" title="关闭">×</button>
         <div class="board-title" data-tauri-drag-region>
           <span id="ptitle">今天的计划</span>
           <span id="prog">0 / 0</span>
         </div>
         <ul id="tasks"></ul>
-        <div class="board-foot">
-          <span id="saved" class="saved"></span>
-        </div>
       </div>
 
-      <!-- 像素卡比（拖动手柄） -->
-      <div class="pet" id="pet" title="拖我移动窗口" data-tauri-drag-region></div>
+      <!-- 像素卡比（拖动手柄；右键弹出退出菜单） -->
+      <div class="pet" id="pet" title="拖我移动窗口 · 右键退出" data-tauri-drag-region></div>
+
+      <!-- 右键卡比出现的退出菜单 -->
+      <div id="petmenu" class="petmenu" hidden>
+        <button id="quit" class="petmenu-item">退出 Kirby</button>
+      </div>
     </div>
     <script type="module" src="main.js"></script>
   </body>

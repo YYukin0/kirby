@@ -99,7 +99,6 @@ const $ = (id: string) => document.getElementById(id)!;
 const ptitle = $("ptitle");
 const progEl = $("prog");
 const tasksEl = $("tasks");
-const savedEl = $("saved");
 const petEl = $("pet");
 
 function cleanTaskText(text: string): string {
@@ -145,7 +144,6 @@ function firstHeading(items: Item[]): string {
 const pad = (n: number) => (n < 10 ? "0" + n : String(n));
 const fmtDate = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 const fmtDateTime = (d: Date) => `${fmtDate(d)} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
-const fmtClock = (d: Date) => `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 
 // --- Rendering the 3-row window ---------------------------------------------
 function checkSvg(): string {
@@ -440,9 +438,7 @@ async function save(): Promise<void> {
   try {
     await invoke("write_atomic", { path: PLAN_FILE, contents: md });
     lastContent = md; // so our own write doesn't look like an external edit
-    savedEl.textContent = `已保存 ${fmtClock(new Date())}`;
   } catch (e) {
-    savedEl.textContent = "保存失败";
     console.error(e);
   }
 }
@@ -508,16 +504,36 @@ startBreath(false);
 blinkLoop();
 
 // Grabbing the pet gives a little boing (a native drag also starts here).
-petEl.addEventListener("mousedown", () => pickup());
-// A plain click collapses / expands the board. The pet stays put; the board is
-// scaled away with a transform so it keeps its layout box (see styles.css).
+// (left button only — right button opens the quit menu instead)
+petEl.addEventListener("mousedown", (e) => { if (e.button === 0) pickup(); });
+// A plain (left) click collapses / expands the board. The pet stays put; the
+// board is scaled away with a transform so it keeps its layout box (styles.css).
 petEl.addEventListener("click", () => {
   const collapsing = !boardEl.classList.contains("collapsed");
   boardEl.classList.toggle("collapsed");
   if (collapsing) puff(); else exhale();
 });
-$("close").addEventListener("click", async () => {
-  try { await T.window.getCurrentWindow().close(); } catch (e) { console.error(e); }
+
+// Right-click the pet → a little "退出 Kirby" menu. Click it to quit the app.
+const menuEl = $("petmenu") as HTMLElement;
+petEl.addEventListener("contextmenu", (e) => {
+  e.preventDefault();
+  menuEl.hidden = false;
+  const mw = menuEl.offsetWidth, mh = menuEl.offsetHeight;
+  const x = Math.max(6, Math.min(e.clientX, window.innerWidth - mw - 6));
+  const y = Math.max(6, Math.min(e.clientY - mh - 6, window.innerHeight - mh - 6));
+  menuEl.style.left = `${x}px`;
+  menuEl.style.top = `${y}px`;
+});
+// Dismiss the menu on any click / Escape that isn't the menu itself.
+document.addEventListener("mousedown", (e) => {
+  if (!menuEl.hidden && !menuEl.contains(e.target as Node)) menuEl.hidden = true;
+}, true);
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") menuEl.hidden = true; });
+$("quit").addEventListener("click", async (e) => {
+  e.stopPropagation();
+  menuEl.hidden = true;
+  try { await T.window.getCurrentWindow().close(); } catch (err) { console.error(err); }
 });
 
 loadFile();
