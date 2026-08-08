@@ -70,12 +70,21 @@ mod tests {
     }
 
     #[test]
-    fn can_write_into_real_vault_subdir() {
-        // Proves the configured vault path is actually writable.
-        let p = "/Users/yyukin0/Documents/obsidian/Study Plans/.tw-selftest.md".to_string();
+    fn creates_missing_subdir_before_writing() {
+        // Proves write_atomic creates a nested subdirectory that doesn't exist
+        // yet (mirrors pointing the pet at a fresh "Study Plans" folder), using a
+        // throwaway temp dir so the test never touches a real user vault.
+        let dir = env::temp_dir().join("tw-test-subdir");
+        let _ = fs::remove_dir_all(&dir);
+        let p = dir
+            .join("Study Plans")
+            .join("current.md")
+            .to_str()
+            .unwrap()
+            .to_string();
         write_atomic(p.clone(), "selftest".into()).unwrap();
-        assert_eq!(read_text(p.clone()).unwrap(), "selftest");
-        let _ = fs::remove_file(&p);
+        assert_eq!(read_text(p).unwrap(), "selftest");
+        let _ = fs::remove_dir_all(&dir);
     }
 }
 
