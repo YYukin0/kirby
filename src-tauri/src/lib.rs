@@ -90,29 +90,56 @@ mod tests {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    use tauri_plugin_autostart::MacosLauncher;
+
     tauri::Builder::default()
+        // Register autostart before setup so the tray can read/toggle it. On
+        // macOS this installs a LaunchAgent that relaunches Kirby at login.
+        .plugin(tauri_plugin_autostart::init(
+            MacosLauncher::LaunchAgent,
+            None,
+        ))
         .setup(|app| {
-            use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+            use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
             use tauri::tray::TrayIconBuilder;
             use tauri::Manager;
+            use tauri_plugin_autostart::ManagerExt;
 
             // Live in the macOS menu bar only: no Dock icon, no app menu. The
             // always-on-top pet window stays visible regardless.
             #[cfg(target_os = "macos")]
             let _ = app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
-            // Menu-bar (tray) icon with a small menu: show/hide + quit.
+            // Menu-bar (tray) icon with a small menu: show/hide + start-at-login
+            // toggle + quit. The check item reflects the current autostart state.
             let toggle = MenuItem::with_id(app, "toggle", "Show / hide Kirby", true, None::<&str>)?;
+            let autostart_on = app.autolaunch().is_enabled().unwrap_or(false);
+            let start_at_login = CheckMenuItem::with_id(
+                app,
+                "start_at_login",
+                "Start at login",
+                true,
+                autostart_on,
+                None::<&str>,
+            )?;
             let quit = PredefinedMenuItem::quit(app, Some("Quit Kirby"))?;
-            let menu = Menu::with_items(app, &[&toggle, &PredefinedMenuItem::separator(app)?, &quit])?;
+            let menu = Menu::with_items(
+                app,
+                &[
+                    &toggle,
+                    &start_at_login,
+                    &PredefinedMenuItem::separator(app)?,
+                    &quit,
+                ],
+            )?;
 
             TrayIconBuilder::with_id("kirby-tray")
                 .icon(app.default_window_icon().unwrap().clone())
                 .tooltip("Kirby — study plan")
                 .menu(&menu)
                 .show_menu_on_left_click(true)
-                .on_menu_event(|app, event| {
-                    if event.id().as_ref() == "toggle" {
+                .on_menu_event(move |app, event| match event.id().as_ref() {
+                    "toggle" => {
                         if let Some(w) = app.get_webview_window("main") {
                             if w.is_visible().unwrap_or(false) {
                                 let _ = w.hide();
@@ -122,6 +149,19 @@ pub fn run() {
                             }
                         }
                     }
+                    "start_at_login" => {
+                        let mgr = app.autolaunch();
+                        let now_on = if mgr.is_enabled().unwrap_or(false) {
+                            let _ = mgr.disable();
+                            false
+                        } else {
+                            let _ = mgr.enable();
+                            true
+                        };
+                        // Keep the checkmark in sync with what actually stuck.
+                        let _ = start_at_login.set_checked(mgr.is_enabled().unwrap_or(now_on));
+                    }
+                    _ => {}
                 })
                 .build(app)?;
 
