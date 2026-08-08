@@ -21,6 +21,8 @@ let planFile = "";
 
 const AUTOSAVE_DELAY_MS = 800; // debounce before writing progress to disk
 const POLL_MS = 2500;          // how often to check the file for LLM edits
+const IDLE_NAP_MS = 3 * 60 * 1000; // idle this long (awake, not all-done) → nap
+const NAP_TICK_MS = 20 * 1000;     // how often we check for idleness
 
 // --- Tauri bridge (withGlobalTauri = true, so no bundler / npm import needed) ---
 const T: any = (window as any).__TAURI__;
@@ -202,7 +204,12 @@ function render(): void {
 // is done the pet celebrates once, then curls up and sleeps (slow breathing,
 // closed eyes, floating Zzz) until you roll a task back and it yawns awake.
 type Mood = "awake" | "sleep";
+// Why the pet is asleep. "done" = every task finished (only a rollback wakes it);
+// "idle" = nobody's touched it for a while (any interaction wakes it).
+type SleepReason = "done" | "idle" | null;
 let mood: Mood = "awake";
+let sleepReason: SleepReason = null;
+let lastInteraction = Date.now();
 let breatheAnim: Animation | undefined;
 let zzzTimer: number | undefined;
 
@@ -290,9 +297,10 @@ function stopZzz(): void {
 }
 
 // --- Mood transitions -------------------------------------------------------
-function enterSleep(celebrate: boolean): void {
+function enterSleep(celebrate: boolean, reason: SleepReason = "done"): void {
   if (mood === "sleep") return;
   mood = "sleep";
+  sleepReason = reason;
   const settle = () => {
     lyrHappy.style.opacity = "0";
     lyrBlink.style.opacity = "0";
@@ -316,6 +324,8 @@ function enterSleep(celebrate: boolean): void {
 function enterAwake(yawn: boolean): void {
   if (mood === "awake") return;
   mood = "awake";
+  sleepReason = null;
+  lastInteraction = Date.now(); // a fresh wake resets the idle clock
   stopZzz();
   lyrSleep.style.opacity = "0";
   petBody.style.opacity = "1";
@@ -333,7 +343,30 @@ function enterAwake(yawn: boolean): void {
 // Quietly sync the pet to the plan state (used after external file reloads).
 function applyMood(): void {
   const done = state.taskIdx.length > 0 && state.cursor >= state.taskIdx.length;
-  if (done) enterSleep(false); else enterAwake(false);
+  if (done) {
+    // An in-progress idle nap becomes a "done" sleep; otherwise curl up now.
+    if (mood === "sleep") sleepReason = "done"; else enterSleep(false, "done");
+  } else {
+    // Not done: only a "done" sleep should wake here. An idle nap keeps napping
+    // (a mere file change isn't a user touch).
+    if (mood === "sleep" && sleepReason === "done") enterAwake(false);
+  }
+}
+
+// --- Idle nap ---------------------------------------------------------------
+// Any interaction resets the idle clock and rouses an idle nap (never a "done"
+// sleep — that only wakes on a rollback).
+function bumpInteraction(): void {
+  lastInteraction = Date.now();
+  if (mood === "sleep" && sleepReason === "idle") enterAwake(true);
+}
+// Ticked on a timer: if we've been awake, not all-done, and untouched past the
+// threshold, drift into an idle nap (same visuals as sleep, no celebration).
+function napCheck(): void {
+  if (document.hidden || mood !== "awake") return;
+  const total = state.taskIdx.length;
+  if (total > 0 && state.cursor >= total) return; // all-done owns the sleep here
+  if (Date.now() - lastInteraction >= IDLE_NAP_MS) enterSleep(false, "idle");
 }
 
 // --- Interaction feedback ---------------------------------------------------
@@ -382,15 +415,17 @@ function pickup(): void {
 }
 
 function complete(): void {
+  bumpInteraction();
   if (state.cursor < state.taskIdx.length) {
     state.cursor++;
-    if (state.cursor >= state.taskIdx.length) enterSleep(true);
+    if (state.cursor >= state.taskIdx.length) enterSleep(true, "done");
     else petComplete();
     render();
     scheduleSave();
   }
 }
 function rollBack(): void {
+  bumpInteraction();
   if (state.cursor > 0) {
     const wasDone = state.cursor >= state.taskIdx.length;
     state.cursor--;
@@ -541,19 +576,26 @@ blinkLoop();
 
 // Grabbing the pet gives a little boing (a native drag also starts here).
 // (left button only — right button opens the quit menu instead)
-petEl.addEventListener("mousedown", (e) => { if (e.button === 0) pickup(); });
+petEl.addEventListener("mousedown", (e) => { if (e.button === 0) { bumpInteraction(); pickup(); } });
 // A plain (left) click collapses / expands the board. The pet stays put; the
 // board is scaled away with a transform so it keeps its layout box (styles.css).
 petEl.addEventListener("click", () => {
+  bumpInteraction();
   const collapsing = !boardEl.classList.contains("collapsed");
   boardEl.classList.toggle("collapsed");
   if (collapsing) puff(); else exhale();
 });
 
+// Any mouse activity over the window counts as "you're here" — resets the idle
+// clock and rouses an idle nap.
+window.addEventListener("mousemove", bumpInteraction);
+window.addEventListener("mousedown", bumpInteraction, true);
+
 // Right-click the pet → a little "Quit Kirby" menu. Click it to quit the app.
 const menuEl = $("petmenu") as HTMLElement;
 petEl.addEventListener("contextmenu", (e) => {
   e.preventDefault();
+  bumpInteraction();
   menuEl.hidden = false;
   const mw = menuEl.offsetWidth, mh = menuEl.offsetHeight;
   const x = Math.max(6, Math.min(e.clientX, window.innerWidth - mw - 6));
@@ -572,8 +614,19 @@ $("quit").addEventListener("click", async (e) => {
   try { await T.window.getCurrentWindow().close(); } catch (err) { console.error(err); }
 });
 
+// Test hook (harmless in normal use): lets the browser sandbox drive the idle
+// nap without waiting minutes.
+(window as any).__kirbyTest = {
+  get mood() { return mood; },
+  get sleepReason() { return sleepReason; },
+  setLastInteraction(t: number) { lastInteraction = t; },
+  napCheck,
+  bumpInteraction,
+};
+
 (async () => {
   await resolvePlanPath();
   await loadFile();
   setInterval(poll, POLL_MS);
+  setInterval(napCheck, NAP_TICK_MS);
 })();
