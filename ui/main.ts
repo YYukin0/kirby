@@ -3,7 +3,7 @@
 //
 // There is NO import/paste UI. To load a plan, an LLM (or you) simply writes
 // Markdown into the single plan file below. The pet reads it, shows only THREE
-// rows at a time (刚完成 / 正在做 / 下一个), and you click to roll forward/back.
+// rows at a time (just done / doing now / up next), and you click to roll forward/back.
 // It auto-refreshes when the file changes, and writes your progress back.
 //
 //  ┌─────────────────────────────────────────────────────────────────────┐
@@ -158,7 +158,7 @@ function makeRow(taskPos: number, cls: string, tag: string, onClick?: () => void
   return li;
 }
 function render(): void {
-  ptitle.textContent = state.title || "今天的计划";
+  ptitle.textContent = state.title || "Today's plan";
   const total = state.taskIdx.length;
   progEl.textContent = `${state.cursor} / ${total}`;
 
@@ -166,19 +166,19 @@ function render(): void {
   if (total === 0) {
     const li = document.createElement("li");
     li.className = "row alldone empty";
-    li.innerHTML = '<span class="tag">还没有计划 · 让 Claude 帮你写一份</span>';
+    li.innerHTML = '<span class="tag">No plan yet · ask Claude to write one</span>';
     tasksEl.appendChild(li);
     return;
   }
-  if (state.cursor - 1 >= 0) tasksEl.appendChild(makeRow(state.cursor - 1, "done", "刚完成", rollBack));
-  if (state.cursor < total) tasksEl.appendChild(makeRow(state.cursor, "active", "正在做", complete));
+  if (state.cursor - 1 >= 0) tasksEl.appendChild(makeRow(state.cursor - 1, "done", "DONE", rollBack));
+  if (state.cursor < total) tasksEl.appendChild(makeRow(state.cursor, "active", "NOW", complete));
   else {
     const li = document.createElement("li");
     li.className = "row alldone";
-    li.innerHTML = '<span class="tag">全部完成 🎉</span>';
+    li.innerHTML = '<span class="tag">All done 🎉</span>';
     tasksEl.appendChild(li);
   }
-  if (state.cursor + 1 < total) tasksEl.appendChild(makeRow(state.cursor + 1, "next", "下一个"));
+  if (state.cursor + 1 < total) tasksEl.appendChild(makeRow(state.cursor + 1, "next", "NEXT"));
 }
 
 // --- Pet animation controller -----------------------------------------------
@@ -514,7 +514,7 @@ petEl.addEventListener("click", () => {
   if (collapsing) puff(); else exhale();
 });
 
-// Right-click the pet → a little "退出 Kirby" menu. Click it to quit the app.
+// Right-click the pet → a little "Quit Kirby" menu. Click it to quit the app.
 const menuEl = $("petmenu") as HTMLElement;
 petEl.addEventListener("contextmenu", (e) => {
   e.preventDefault();

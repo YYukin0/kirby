@@ -34,7 +34,7 @@ html, body {
   gap: 0;
 }
 
-/* ---------- 计划牌 ---------- */
+/* ---------- Plan card ---------- */
 .board {
   position: relative;
   width: 272px;
@@ -48,10 +48,10 @@ html, body {
   transform-origin: 50% 100%; /* shrink downward, toward the pet */
   transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.3s ease;
 }
-/* 点卡比收起：牌子朝卡比方向缩小淡出（像被“吸”进去）。用 transform 不改布局，
-   所以下方的卡比一动不动。 */
+/* Click Kirby to collapse: the card shrinks/fades toward Kirby (as if inhaled).
+   Using transform keeps its layout box, so Kirby below never moves. */
 .board.collapsed { transform: scale(0.12); opacity: 0; pointer-events: none; }
-.board::after { /* 指向宠物的小尖角 */
+.board::after { /* little tail pointing down at the pet */
   content: "";
   position: absolute;
   left: 50%;
@@ -83,7 +83,7 @@ html, body {
   margin-left: 8px;
 }
 
-/* ---------- 三条任务 ---------- */
+/* ---------- The three task rows ---------- */
 #tasks { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
 .row {
   display: flex;
@@ -138,7 +138,7 @@ html, body {
 .label { font-size: 13px; color: var(--text); font-weight: 500; line-height: 1.3; }
 .row.active .label { font-weight: 600; }
 
-/* ---------- 右键退出菜单 ---------- */
+/* ---------- Right-click quit menu ---------- */
 .petmenu {
   position: absolute;
   z-index: 10;
@@ -166,7 +166,7 @@ html, body {
 }
 .petmenu-item:hover { background: rgba(255, 255, 255, 0.08); }
 
-/* ---------- 像素卡比 ---------- */
+/* ---------- Pixel Kirby ---------- */
 /* Every motion (breathe / blink / hop / inhale / sleep) is driven from main.ts
    with the Web Animations API. .pet is the window drag region; its children are
    pointer-events:none so a mousedown lands on .pet and can drag the window. */

@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="zh">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -8,21 +8,21 @@
   </head>
   <body>
     <div id="app">
-      <!-- 计划牌 -->
+      <!-- Plan card -->
       <div class="board">
         <div class="board-title" data-tauri-drag-region>
-          <span id="ptitle">今天的计划</span>
+          <span id="ptitle">Today's plan</span>
           <span id="prog">0 / 0</span>
         </div>
         <ul id="tasks"></ul>
       </div>
 
-      <!-- 像素卡比（拖动手柄；右键弹出退出菜单） -->
-      <div class="pet" id="pet" title="拖我移动窗口 · 右键退出" data-tauri-drag-region></div>
+      <!-- Pixel Kirby (drag handle; right-click for the quit menu) -->
+      <div class="pet" id="pet" title="Drag to move · right-click to quit" data-tauri-drag-region></div>
 
-      <!-- 右键卡比出现的退出菜单 -->
+      <!-- Quit menu shown on right-click -->
       <div id="petmenu" class="petmenu" hidden>
-        <button id="quit" class="petmenu-item">退出 Kirby</button>
+        <button id="quit" class="petmenu-item">Quit Kirby</button>
       </div>
     </div>
     <script type="module" src="main.js"></script>
