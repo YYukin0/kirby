@@ -24,7 +24,9 @@ import {
 } from "./plan.js";
 
 const AUTOSAVE_DELAY_MS = 800; // debounce before writing progress to disk
-const POLL_MS = 2500;          // how often to check the file for LLM edits
+const POLL_MS = 2500;          // how often to check the file for LLM edits (visible)
+const HIDDEN_POLL_MS = 30000;  // slower file check while the window is hidden
+const RESOLVE_EVERY = 6;       // re-resolve the plan path every N polls, not every one
 const IDLE_NAP_MS = 3 * 60 * 1000; // idle this long (awake, not all-done) → nap
 const NAP_TICK_MS = 20 * 1000;     // how often we check for idleness
 
@@ -128,6 +130,8 @@ interface PlanState {
 let state: PlanState = { title: "", created: "", items: [], taskIdx: [], cursor: 0, nonLinear: false };
 let saveTimer: number | undefined;
 let lastContent = ""; // last file text we read or wrote — to detect external (LLM) edits
+let lastStat = "";    // `${mtime}:${len}` of the plan file at that last read/write —
+                      // a cheap gate so idle polls do a stat() instead of a full read
 
 // --- DOM refs ---------------------------------------------------------------
 const $ = (id: string) => document.getElementById(id)!;
@@ -264,12 +268,20 @@ function spark(n: number, colors: string[]): void {
   }
 }
 
-// Random blinking — runs forever but only shows while awake and visible.
+// Random blinking — reschedules itself, but only while the window is visible.
+// The handle lets us tear the loop down when hidden so the process can go idle
+// (a forever-timer is one of the things that kept WebKit from ever reclaiming).
+let blinkTimer: number | undefined;
 function blinkLoop(): void {
-  window.setTimeout(() => {
-    if (mood === "awake" && !document.hidden) flash(lyrBlink, 120);
+  blinkTimer = window.setTimeout(() => {
+    blinkTimer = undefined;
+    if (document.hidden) return; // stop rescheduling; visibilitychange resumes us
+    if (mood === "awake") flash(lyrBlink, 120);
     blinkLoop();
   }, 2200 + Math.random() * 2800);
+}
+function stopBlink(): void {
+  if (blinkTimer !== undefined) { clearTimeout(blinkTimer); blinkTimer = undefined; }
 }
 
 // Floating "z" that drifts up and fades, spawned on a loop while sleeping.
@@ -331,7 +343,10 @@ function applyTimeVisuals(): void {
 }
 
 // Recomputed on a timer so crossing midnight / dawn updates without a restart.
+// While hidden we skip it: the aura (Zzz) stays torn down, and resumeVisuals
+// re-applies the correct time-of-day face when the window comes back.
 function refreshTimeOfDay(): void {
+  if (document.hidden) return;
   applyTimeVisuals();
   applySleepAura();
 }
@@ -511,8 +526,20 @@ async function save(): Promise<void> {
   try {
     await invoke("write_atomic", { path: planFile, contents: md });
     lastContent = md; // so our own write doesn't look like an external edit
+    await refreshStat(); // ...and its stat, so the next poll won't re-read our own write
   } catch (e) {
     console.error(e);
+  }
+}
+
+// Cheap file signature (mtime + length) from Rust. Kept in `lastStat` so idle
+// polls can skip the full read entirely when the plan file hasn't changed.
+async function refreshStat(): Promise<void> {
+  try {
+    const s = await invoke("plan_stat", { path: planFile });
+    lastStat = Array.isArray(s) ? `${s[0]}:${s[1]}` : "";
+  } catch {
+    lastStat = "";
   }
 }
 
@@ -537,6 +564,10 @@ async function resolvePlanPath(): Promise<void> {
 async function loadFile(): Promise<void> {
   if (!planFile) { await resolvePlanPath(); }
   try {
+    // Stat before read: if the file changes between the two, the stored stat is
+    // older than the content, so the next poll re-reads (safe) rather than
+    // storing a newer stat with stale content (would miss the edit).
+    await refreshStat();
     const text = await invoke("read_text", { path: planFile });
     lastContent = text;
     const { fm, body } = splitFrontmatter(text);
@@ -545,6 +576,7 @@ async function loadFile(): Promise<void> {
   } catch {
     // File not there yet — empty state; keep polling so it appears once written.
     lastContent = "";
+    lastStat = "";
     state = { title: "", created: "", items: [], taskIdx: [], cursor: 0, nonLinear: false };
     render();
   }
@@ -552,18 +584,27 @@ async function loadFile(): Promise<void> {
 
 // Poll for external (LLM) edits and reload when the file changed under us,
 // unless we have a pending save (don't clobber the user's in-flight clicks).
+let pollsSinceResolve = 0;
 async function poll(): Promise<void> {
   if (saveTimer !== undefined) return;
-  // Pick up a plan-file switch (tray picker / config edit) between polls.
+  // The plan path only changes on a tray pick / config edit (rare), so re-resolve
+  // it every few polls instead of every one — one fewer IPC + string per idle
+  // tick. A switch is still noticed within ~15s (and immediately on resume).
   const prev = planFile;
-  await resolvePlanPath();
+  if (pollsSinceResolve++ % RESOLVE_EVERY === 0) await resolvePlanPath();
   if (planFile !== prev) { await loadFile(); return; }
+  let sig: string;
   try {
-    const text = await invoke("read_text", { path: planFile });
-    if (text !== lastContent) await loadFile();
+    const s = await invoke("plan_stat", { path: planFile });
+    sig = Array.isArray(s) ? `${s[0]}:${s[1]}` : "";
   } catch {
     if (lastContent !== "") await loadFile(); // file was removed
+    return;
   }
+  // Unchanged on disk → skip the full read. This is the common idle case, and
+  // avoids allocating a whole-file string every 2.5s (which churned WebKit malloc).
+  if (sig === lastStat) return;
+  await loadFile(); // changed (or first sight) → read + apply, refreshes the stat
 }
 
 // --- Wire up ----------------------------------------------------------------
@@ -640,10 +681,50 @@ $("quit").addEventListener("click", async (e) => {
   bumpInteraction,
 };
 
+// --- Visibility gating ------------------------------------------------------
+// When the pet is hidden (tray toggle / another Space / minimized), tear down
+// every continuous thing: the infinite breathing animation, the blink loop, and
+// the Zzz spawner. These forever-running timers/animations were what kept the
+// WebContent process "warm" so it never idled and WebKit never reclaimed memory.
+function suspendVisuals(): void {
+  if (breatheAnim) { breatheAnim.cancel(); breatheAnim = undefined; }
+  stopBlink();
+  stopZzz();
+}
+function resumeVisuals(): void {
+  startBreath(mood === "sleep"); // no-ops under reduced motion
+  if (blinkTimer === undefined) blinkLoop();
+  applyTimeVisuals();
+  applySleepAura();
+}
+
+// Poll reschedules itself so we can slow it right down while hidden (30s vs
+// 2.5s) — a hidden pet doesn't need to notice an LLM edit promptly.
+let pollTimer: number | undefined;
+function schedulePoll(): void {
+  pollTimer = window.setTimeout(pollTick, document.hidden ? HIDDEN_POLL_MS : POLL_MS);
+}
+async function pollTick(): Promise<void> {
+  try { await poll(); } finally { schedulePoll(); }
+}
+
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) {
+    suspendVisuals();
+  } else {
+    lastInteraction = Date.now(); // coming back into view counts as "you're here"
+    resumeVisuals();
+    // Catch up on any file change (or plan-file switch) we skipped while hidden.
+    pollsSinceResolve = 0; // force a path re-resolve on this catch-up poll
+    if (pollTimer !== undefined) clearTimeout(pollTimer);
+    pollTick();
+  }
+});
+
 (async () => {
   await resolvePlanPath();
   await loadFile();
-  setInterval(poll, POLL_MS);
+  schedulePoll();
   setInterval(napCheck, NAP_TICK_MS);
   setInterval(refreshTimeOfDay, TIME_TICK_MS);
 })();

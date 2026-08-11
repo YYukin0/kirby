@@ -9,6 +9,21 @@ fn read_text(path: String) -> Result<String, String> {
     fs::read_to_string(&path).map_err(|e| e.to_string())
 }
 
+/// Cheap change signature for a file: `(mtime_ms, len)`. The frontend polls this
+/// every couple of seconds and only does a full `read_text` when it changes, so
+/// an idle pet never allocates a whole-file string on each poll.
+#[tauri::command]
+fn plan_stat(path: String) -> Result<(u128, u64), String> {
+    let m = fs::metadata(&path).map_err(|e| e.to_string())?;
+    let mtime = m
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    Ok((mtime, m.len()))
+}
+
 /// Where the app keeps its own config file (plan-file override lives here).
 fn config_file(app: &tauri::AppHandle) -> Option<PathBuf> {
     app.path()
@@ -129,6 +144,27 @@ mod tests {
         write_atomic(p.clone(), "one".into()).unwrap();
         write_atomic(p.clone(), "two".into()).unwrap();
         assert_eq!(read_text(p).unwrap(), "two");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn plan_stat_reports_len_and_tracks_changes() {
+        let dir = env::temp_dir().join("tw-test-stat");
+        let _ = fs::remove_dir_all(&dir);
+        let p = dir.join("plan.md").to_str().unwrap().to_string();
+
+        // Missing file → error (frontend treats this as "file removed").
+        assert!(plan_stat(p.clone()).is_err());
+
+        write_atomic(p.clone(), "hello".into()).unwrap();
+        let (_mtime1, len1) = plan_stat(p.clone()).unwrap();
+        assert_eq!(len1, 5);
+
+        // A different-length write changes the signature.
+        write_atomic(p.clone(), "hello world".into()).unwrap();
+        let (_mtime2, len2) = plan_stat(p.clone()).unwrap();
+        assert_eq!(len2, 11);
+
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -259,7 +295,7 @@ pub fn run() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![read_text, write_atomic, plan_path])
+        .invoke_handler(tauri::generate_handler![read_text, write_atomic, plan_path, plan_stat])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
