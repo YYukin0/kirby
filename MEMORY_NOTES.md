@@ -11,7 +11,7 @@ re-reading the whole plan file on every poll) brought idle footprint to **~16 MB
 | Metric (WebContent, idle) | Before | After |
 |---|---|---|
 | phys_footprint (fresh) | ~15 MB | ~15 MB |
-| **phys_footprint (idle, aged)** | **~1180 MB** (peak 1219, after ~2 days) | **~20 MB, flat** (15-min soak; see below) |
+| **phys_footprint (idle, aged)** | **~1180 MB** (peak 1219, after ~2 days) | **~58 MB, plateaus** (8-hour soak; see below) |
 | WebKit malloc (dirty) | 876 MB | ~9 MB |
 | MALLOC_SMALL | 293 MB across **9623 regions** | ~1–2 MB across **~340 regions** |
 | Reclaimable | ~0 (all dirty/live) | small |
@@ -85,9 +85,13 @@ tests, and a footprint soak on the release bundle.
 - **Throttled resolve**: over ~6 idle polls → **1 `plan_path`** (not 6) and still
   **0 `read_text`**; a simulated tray plan-file switch is still picked up.
 - `npm test` → 10/10 pass. `cargo test` → 4/4 pass.
-- Release soak (WebContent, idle, no DevTools, 15 min @ 90 s): **16 → 20 MB then
-  flat at 20 MB**, MALLOC_SMALL regions flat at **340** (vs 9623 aged), CPU ~0.
-  (See "Re-measure" to reproduce / extend to an overnight run.)
+- **8-hour release soak** (WebContent, idle, visible, no DevTools, sampled every
+  10 min): footprint climbs in steps from 14 MB to a **~57–58 MB plateau and then
+  holds flat** — 57 MB unchanged from 05:33 to 09:13 (≈3.7 h straight), only
+  +1 MB over the final ~5 h. MALLOC_SMALL regions settle at **605** (vs **9623**
+  on the aged buggy process). CPU ~0 throughout. This is the JS heap growing to
+  its working set and then plateauing — not a leak. Well under the 250 MB ceiling
+  and the 150 MB target.
 
 Regression check — all interactions still work: complete, rollback, collapse/
 expand board, idle nap, wake, done-celebrate, file poll pick-up, autosave,
