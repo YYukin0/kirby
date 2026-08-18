@@ -5,4 +5,8 @@ src-tauri/target/
 src-tauri/gen/
 icon-source.png
 .DS_Store
-sandbox/
+# sandbox/ is scratch, except the browser harness — it carries __fxSoak, the
+# memory regression probe for the fx-layer leak. Exclude the contents rather
+# than the directory, or the negation below can't re-include anything.
+sandbox/*
+!sandbox/harness.html

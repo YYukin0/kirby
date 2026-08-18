@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<!--
+  Browser test harness (NOT shipped). Serve the repo over http and open
+  /sandbox/harness.html, then drive main.js from the console / an injected
+  script. It mirrors ui/index.html's DOM, mocks window.__TAURI__ with an
+  in-memory vault, and only imports main.js when __boot() is called so each
+  test controls the initial file contents, reduced-motion, and the clock.
+-->
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="stylesheet" href="../ui/styles.css" />
+  </head>
+  <body>
+    <div id="app">
+      <div class="board">
+        <div class="board-title" data-tauri-drag-region>
+          <span id="ptitle">Today's plan</span>
+          <span id="prog">0 / 0</span>
+        </div>
+        <ul id="tasks"></ul>
+      </div>
+      <div class="pet" id="pet" data-tauri-drag-region></div>
+      <div id="petmenu" class="petmenu" hidden>
+        <button id="quit" class="petmenu-item">Quit Kirby</button>
+      </div>
+    </div>
+    <script>
+      // In-memory vault keyed by absolute path, matching what main.ts writes.
+      window.__vault = {};
+      window.__writes = []; // every write_atomic payload, in order
+      window.__closed = false;
+
+      window.__TAURI__ = {
+        core: {
+          invoke: async (cmd, args) => {
+            if (cmd === "plan_path") return window.__planPath;
+            if (cmd === "read_text") {
+              const t = window.__vault[args.path];
+              if (t === undefined) throw new Error("ENOENT: " + args.path);
+              return t;
+            }
+            if (cmd === "plan_stat") {
+              // Mirrors Rust's (mtime_ms, len). The real host uses the file's
+              // mtime; here we hash the content so any in-memory edit (even a
+              // same-length one) still changes the signature for the poller.
+              const t = window.__vault[args.path];
+              if (t === undefined) throw new Error("ENOENT: " + args.path);
+              let h = 0;
+              for (let i = 0; i < t.length; i++) h = (h * 31 + t.charCodeAt(i)) >>> 0;
+              return [h, t.length];
+            }
+            if (cmd === "write_atomic") {
+              window.__vault[args.path] = args.contents;
+              window.__writes.push(args.contents);
+              return;
+            }
+            throw new Error("unknown command: " + cmd);
+          },
+        },
+        window: {
+          getCurrentWindow: () => ({
+            close: async () => {
+              window.__closed = true;
+            },
+          }),
+        },
+      };
+
+      // Boot the app under test. Options:
+      //   content:        initial current.md text (seeded into the vault)
+      //   path:           override the plan-file key (defaults to main.ts's)
+      //   reducedMotion:  force prefers-reduced-motion to match
+      window.__boot = async (opts = {}) => {
+        const path =
+          opts.path || "/Users/yyukin0/Documents/obsidian/Study Plans/current.md";
+        window.__planPath = path;
+        if (opts.content !== undefined) window.__vault[path] = opts.content;
+
+        if (opts.reducedMotion !== undefined) {
+          const real = window.matchMedia.bind(window);
+          window.matchMedia = (q) => {
+            if (q.includes("prefers-reduced-motion"))
+              return {
+                matches: !!opts.reducedMotion,
+                media: q,
+                addEventListener() {},
+                removeEventListener() {},
+                addListener() {},
+                removeListener() {},
+                onchange: null,
+                dispatchEvent() {
+                  return false;
+                },
+              };
+            return real(q);
+          };
+        }
+
+        await import("../ui/main.js");
+        // Give the initial async loadFile() a tick to settle.
+        await new Promise((r) => setTimeout(r, 30));
+      };
+
+      // Memory regression probe. The 1.2 GB bug was the sleep aura minting a
+      // DOM node + a Web-Animations object every 1.4s and leaking both, so the
+      // invariant is: while the pet sleeps with the Zzz aura running, the fx
+      // layer's child count and the live animation count must not grow.
+      //
+      // Two things it needs that a background tab doesn't give you:
+      //   - the leak is on the *visible* path (suspendVisuals tears the aura
+      //     down when hidden), so document.hidden is pinned false, and
+      //   - a backgrounded tab doesn't advance animations, which is fine here
+      //     because we count objects rather than watch them move.
+      //
+      // Usage, from the console after serving the repo over http:
+      //   await __boot({ content: "# t\n\n- [ ] a\n- [ ] b\n" });
+      //   await __fxSoak(30)   // → { leaked: false, ... }
+      window.__fxSoak = async (seconds = 30, sampleMs = 2000) => {
+        Object.defineProperty(document, "hidden", {
+          configurable: true,
+          get: () => false,
+        });
+        const K = window.__kirbyTest;
+        const fx = document.querySelector(".pet-fx");
+        // Daytime, so we get the drifting Zzz rather than the still moon.
+        K.setClock(() => new Date(2026, 7, 18, 14, 0, 0));
+        // Click every task off to reach the all-done sleep.
+        for (let i = 0; i < 50; i++) {
+          const row = document.querySelector("#tasks .row.active");
+          if (!row) break;
+          row.click();
+          await new Promise((r) => setTimeout(r, 60));
+        }
+        await new Promise((r) => setTimeout(r, 1600)); // past the celebration
+        if (K.mood !== "sleep" || !fx.classList.contains("zzz-on"))
+          throw new Error(
+            `soak needs a sleeping pet with the Zzz aura: mood=${K.mood} zzz=${fx.classList.contains("zzz-on")}`,
+          );
+        const samples = [];
+        const until = Date.now() + seconds * 1000;
+        while (Date.now() < until) {
+          samples.push({ t: samples.length * (sampleMs / 1000), ...K.fxStats() });
+          await new Promise((r) => setTimeout(r, sampleMs));
+        }
+        const first = samples[0], last = samples[samples.length - 1];
+        return {
+          leaked:
+            last.children > first.children || last.animations > first.animations,
+          children: [first.children, last.children],
+          animations: [first.animations, last.animations],
+          samples,
+        };
+      };
+    </script>
+  </body>
+</html>
