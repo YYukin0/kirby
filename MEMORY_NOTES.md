@@ -1,5 +1,13 @@
 # Memory notes — WebKit footprint fix
 
+> **2026-08-18 — the 1.2 GB came back, and the diagnosis below was incomplete.**
+> The idle-warmth work in this document is real but it was not the root cause;
+> it only slowed the growth (~2 days to 1.18 GB → ~6.5 days to 1.25 GB). The
+> actual leak was the sleep-aura Zzz spawner, and the 8-hour soak that "proved"
+> the fix passed only because it ran in the one state where the leak cannot
+> fire. **Read [Round 2](#round-2--the-actual-leak-2026-08-18) first**; treat
+> the 58 MB plateau claim below as superseded.
+
 ## TL;DR
 
 The idle WebContent process was sitting at **~1.18 GB** physical footprint. Root
@@ -11,7 +19,7 @@ re-reading the whole plan file on every poll) brought idle footprint to **~16 MB
 | Metric (WebContent, idle) | Before | After |
 |---|---|---|
 | phys_footprint (fresh) | ~15 MB | ~15 MB |
-| **phys_footprint (idle, aged)** | **~1180 MB** (peak 1219, after ~2 days) | **~58 MB, plateaus** (8-hour soak; see below) |
+| **phys_footprint (idle, aged)** | **~1180 MB** (peak 1219, after ~2 days) | ~~**~58 MB, plateaus**~~ — **wrong, see Round 2**: reached 1253 MB in 6.5 days |
 | WebKit malloc (dirty) | 876 MB | ~9 MB |
 | MALLOC_SMALL | 293 MB across **9623 regions** | ~1–2 MB across **~340 regions** |
 | Reclaimable | ~0 (all dirty/live) | small |
@@ -132,3 +140,145 @@ DevTools closed.
   memory factor. Left untouched to keep behavior identical.
 - If future growth ever reappears, first re-check that `visibilitychange` fires on
   the tray hide path in the shipping OS build; the fix depends on it.
+
+---
+
+# Round 2 — the actual leak (2026-08-18)
+
+The pet ran 6 days 13 h on the "fixed" build and reached **1253 MB** (peak =
+current, i.e. monotonic, never once falling back).
+
+## TL;DR
+
+**Every floating `z` permanently leaked ~17 KB.** 54,389 of them over 6.5 days
+≈ the whole 1.25 GB. `spawnZ()` minted a div + a Web-Animations object per
+tick and dropped both in `onfinish` — but a finished `Animation` that still has
+an `onfinish` handler stays registered as a **GC root**, so nothing in the graph
+it holds was ever collectable.
+
+## Evidence
+
+`heap` on the live process — one live object per leaked z, straight down:
+
+```
+ 5685862  727747104  128.0  non-object                      ← keyframe RenderStyle storage
+  336873   10779936   32.0  WebCore::LinearTimingFunction     (6 × 56,127)
+  163169    7832112   48.0  Style::TranslateTransformFunction (3 × 54,389)
+  163168    7832064   48.0  Style::RotateTransformFunction    (3 × 54,389)
+   56127   57474048 1024.0  WebCore::BlendingKeyframe
+   56127   25144896  448.0  WebCore::KeyframeEffect
+   56127   17062608  304.0  WebCore::WebAnimation
+   54385    4350800   80.0  WebCore::JSEventListener        ← the onfinish handlers
+   54383    6090448  112.0  WebCore::Text                   ← the "z" glyph
+   54359    6957952  128.0  WebCore::HTMLDivElement
+   54087   34615680  640.0  NSCTFont                        ← one per random font size
+```
+
+`translate + rotate across 3 keyframes` is a fingerprint unique to `spawnZ`.
+936 MB of live objects ÷ 54,389 z = **17.2 KB each**, and `heap`'s live total
+matched the process footprint — so this was ~100 % of the 1.25 GB, not a
+fragmentation artifact.
+
+Three checks pinned the mechanism:
+
+1. **They were out of the DOM.** The whole page had 14 `RenderBlockFlow` + 6
+   `RenderText` + 254 `LegacyRenderSVGRect` (the pet sprite) — ~20 render
+   objects total. 54 k divs with zero renderers ⇒ `z.remove()` did run and the
+   animations did finish. This was *not* an unbounded DOM.
+2. **A forced full GC freed nothing.** `notifyutil -p org.WebKit.lowMemory`
+   (WebKit's memory-pressure handler: full JSC GC + cache purge) moved the
+   footprint 1253 → 1244 MB and left every count intact. So these were not
+   garbage awaiting a lazy GC — they were **reachable roots**.
+3. **The rate matched.** 54,389 nodes / 6.57 days = one per 10.4 s average,
+   against a 1.4 s spawner ⇒ ~13 % duty cycle, i.e. ~3 h/day of visible daytime
+   napping. Consistent.
+
+## Root cause
+
+`element.animate()` returns an `Animation` registered with the document
+timeline. Attaching `onfinish` gives it an event listener, and WebKit keeps such
+an animation alive as an ActiveDOMObject root — playing out does not release it.
+It then transitively retains its `KeyframeEffect`, the per-keyframe
+`RenderStyle` (the 128-byte `non-object` bulk), and, through the closure, the
+detached `<div>`, its text node, its inline style, and its font.
+
+`spark()` had the identical `a.onfinish = () => s.remove()` shape (~200 KB
+retained per click), and every one-shot `petBody.animate(...)` leaked its own
+Animation the same way.
+
+Amplifier: `font-size: ${9 + Math.random() * 5}px` gave each z a **unique
+fractional size**, so WebKit's font cache grew one `NSCTFont` (640 B) plus
+dictionaries per particle — 34 MB of the total on its own.
+
+## Trigger conditions
+
+The leak needed **visible × asleep × not deep-night**, all three:
+
+- hidden ⇒ `suspendVisuals()` → `stopZzz()`, and
+- 22:00–05:00 ⇒ the still moon replaces the drifting Zzz.
+
+Rate while those hold: 1 z / 1.4 s × 17 KB ≈ **44 MB/hour**.
+
+## Why the 8-hour soak passed
+
+It ran 02:23 → 10:23 with the display asleep for much of it. `napCheck()`
+returns early when `document.hidden`, so **the pet never fell asleep**, so the
+Zzz aura never ran. The soak measured the one state in which the bug is
+inert — and the flat stretch it reported (05:33–09:13) is exactly the window
+where a napping pet would have been leaking hardest.
+
+## The fix
+
+The fx layer is now a **fixed pool built once** — 3 Zzz nodes, the moon, and 24
+sparkles — driven by CSS keyframes:
+
+- **Zzz**: one 4200 ms `zzz-drift` keyframe loop on three nodes staggered by
+  `animation-delay` 0 / 1400 / 2800 ms, so a z still lifts off every 1.4 s.
+  `startZzz`/`stopZzz` toggle a `.zzz-on` class, which adds/removes the
+  animation outright (not `paused`, which would keep the compositing layer).
+  Sizes are three fixed integers, so the font cache holds three entries.
+  Caveat that bit once: the `animation:` shorthand resets `animation-delay`, so
+  the per-node delays must come **after** it at equal specificity or all three
+  z's take off in unison.
+- **Sparkles**: a burst re-points pooled nodes via `--dx/--dy/--dur` custom
+  properties and restarts the CSS animation. No allocation per particle.
+- **One-shots** (`hop`, `pickup`, `exhale`, `puff`, `petRollback`, the yawn) go
+  through `animateOnce()`, which nulls `onfinish` and calls `cancel()` when the
+  animation ends, unregistering it from the timeline.
+- `startZzz()` now bails when `document.hidden`. `applySleepAura()` runs from
+  `enterSleep`/`enterAwake`, and a poll can reload an all-done plan behind the
+  tray — without the guard the aura restarted itself after `suspendVisuals()`
+  had torn it down, leaving a forever-animation on an invisible window.
+
+Net: **a sleeping pet allocates nothing per tick.**
+
+## Verifying it (this is the part the old soak got wrong)
+
+`sandbox/harness.html` now ships `__fxSoak(seconds)`. It pins `document.hidden`
+false, clicks the plan to all-done, asserts the pet is actually asleep **with
+the aura on**, then samples `__kirbyTest.fxStats()`:
+
+```js
+await __boot({ content: "# t\n\n- [ ] a\n- [ ] b\n" });
+await __fxSoak(30)   // → { leaked: false, children: [28,28], animations: [37,37] }
+```
+
+Measured against the old build for contrast, same probe:
+
+| build | fx children over 16 s | live animations |
+|---|---|---|
+| before | 31 → 40 (monotonic) | 38 → 47 |
+| after | 28 → 28 | 35 → 35 |
+
+Keyframe fidelity was checked by driving `Animation.currentTime` directly
+(a backgrounded tab does not advance animations, so sampling a running one is
+useless): opacity 0 → 0.9 @570 ms → 0 @1900 ms, translate (0,0) →
+(6,−10) → (16,−30), rotate −6° → 4° → 10° — identical to the WAAPI keyframes it
+replaced. Behaviour sweep: night→moon, day→Zzz, hidden→aura off, visible→aura
+back, rollback→awake, reduced-motion→0 animations, fx children pinned at 28
+throughout. `npm test` 10/10, `cargo test` 4/4.
+
+**When re-measuring the real app, the pet must be visibly asleep** (finish every
+task, or leave it untouched past `IDLE_NAP_MS`, with the display on and the
+clock outside 22:00–05:00). An idle-but-awake pet, or a sleeping pet behind a
+dark display, proves nothing.

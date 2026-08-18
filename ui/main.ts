@@ -203,7 +203,27 @@ let mood: Mood = "awake";
 let sleepReason: SleepReason = null;
 let lastInteraction = Date.now();
 let breatheAnim: Animation | undefined;
-let zzzTimer: number | undefined;
+
+// One-shot Web-Animations helper.
+//
+// `element.animate()` hands back an Animation that stays registered with the
+// document timeline. Leaving an `onfinish` handler on it keeps it alive as a GC
+// root even after it has played out — and through it the keyframes, their
+// per-keyframe RenderStyle, and (for a throwaway node) the detached element
+// itself. That is what grew this process to 1.2 GB; a forced full GC freed none
+// of it. So every one-shot unregisters and cancels itself the moment it ends.
+// The only animation we deliberately keep is `breatheAnim`, which has no
+// listener and is cancelled by hand.
+function animateOnce(
+  el: Element, frames: Keyframe[], opts: KeyframeAnimationOptions, done?: () => void,
+): void {
+  const a = el.animate(frames, opts);
+  a.onfinish = () => {
+    a.onfinish = null; // drop the listener before the cancel below
+    a.cancel();        // unregister from the timeline
+    if (done) done();
+  };
+}
 
 // Honor the OS "reduce motion" setting: when off, we drop continuous/large
 // motion (breathing, hops, sparkles, drifting Zzz) and keep only instant state
@@ -215,7 +235,12 @@ let motionOK = !reduceMotionMQ.matches;
 let petBody: HTMLElement, petFx: HTMLElement, petShadow: HTMLElement;
 let lyrCheek: SVGGElement, lyrBlink: SVGGElement, lyrHappy: SVGGElement, lyrSleep: SVGGElement;
 let lyrSleepy: SVGGElement, lyrNightcap: SVGGElement;
-let moonEl: HTMLElement | undefined; // static night-sleep 🌙 (replaces drifting Zzz)
+// The fx layer's contents are a fixed pool built once during wire-up: three Zzz
+// nodes, the night moon, and SPARK_POOL sparkles. Nothing is created or removed
+// at runtime, so a napping pet allocates nothing per tick.
+const SPARK_POOL = 24; // > the 22 particles the all-done celebration fires
+let sparkEls: HTMLElement[] = [];
+let sparkNext = 0;
 
 // Fade an expression layer in for `ms`, then back out.
 function flash(g: SVGGElement, ms: number): void {
@@ -237,34 +262,38 @@ function startBreath(slow: boolean): void {
 // hands control back to it when it finishes.
 function hop(height: number, dur: number): void {
   if (!motionOK) return;
-  petBody.animate([
+  animateOnce(petBody, [
     { transform: "translateY(0) scale(1,1)" },
     { transform: "translateY(0) scale(1.18,0.82)", offset: 0.14 },
     { transform: `translateY(${-height}px) scale(0.9,1.1)`, offset: 0.5 },
     { transform: "translateY(0) scale(1.12,0.88)", offset: 0.86 },
     { transform: "translateY(0) scale(1,1)" },
   ], { duration: dur, easing: "cubic-bezier(.3,.7,.3,1)" });
-  petShadow.animate([
+  animateOnce(petShadow, [
     { transform: "translateX(-50%) scale(1)", opacity: 0.22 },
     { transform: "translateX(-50%) scale(0.7)", opacity: 0.1, offset: 0.5 },
     { transform: "translateX(-50%) scale(1)", opacity: 0.22 },
   ], { duration: dur, easing: "ease-in-out" });
 }
 
-// Little diamond particles bursting up out of the pet.
+// Little diamond particles bursting up out of the pet. Each burst re-points
+// nodes from the pool at fresh trajectories and restarts their CSS animation,
+// so a click costs a few style writes instead of ~200 KB of retained nodes.
 function spark(n: number, colors: string[]): void {
   if (!motionOK) return; // no confetti under reduced motion
   for (let i = 0; i < n; i++) {
-    const s = document.createElement("div");
-    const size = 3 + Math.random() * 4;
-    s.style.cssText = `position:absolute;left:50%;top:36%;width:${size}px;height:${size}px;background:${colors[i % colors.length]};border-radius:1px;transform:rotate(45deg);`;
-    petFx.appendChild(s);
+    const s = sparkEls[sparkNext++ % SPARK_POOL];
+    if (!s) continue;
+    const size = 3 + Math.round(Math.random() * 4);
     const ang = (-70 + Math.random() * 140) * Math.PI / 180, dist = 34 + Math.random() * 40;
-    const a = s.animate([
-      { transform: "translate(-50%,-50%) rotate(45deg) scale(1)", opacity: 1 },
-      { transform: `translate(${Math.sin(ang) * dist - 50}%,${-Math.cos(ang) * dist - 50}%) rotate(160deg) scale(0)`, opacity: 0 },
-    ], { duration: 560 + Math.random() * 260, easing: "cubic-bezier(.2,.6,.3,1)" });
-    a.onfinish = () => s.remove();
+    s.classList.remove("burst");
+    void s.offsetWidth; // reflow, so re-adding the class restarts the animation
+    s.style.width = s.style.height = `${size}px`;
+    s.style.background = colors[i % colors.length];
+    s.style.setProperty("--dx", `${Math.sin(ang) * dist - 50}%`);
+    s.style.setProperty("--dy", `${-Math.cos(ang) * dist - 50}%`);
+    s.style.setProperty("--dur", `${560 + Math.round(Math.random() * 260)}ms`);
+    s.classList.add("burst");
   }
 }
 
@@ -284,42 +313,27 @@ function stopBlink(): void {
   if (blinkTimer !== undefined) { clearTimeout(blinkTimer); blinkTimer = undefined; }
 }
 
-// Floating "z" that drifts up and fades, spawned on a loop while sleeping.
-function spawnZ(): void {
-  const z = document.createElement("div");
-  z.className = "zzz";
-  z.textContent = "z";
-  z.style.cssText = `position:absolute;left:62%;top:26%;font-size:${9 + Math.random() * 5}px;`;
-  petFx.appendChild(z);
-  const a = z.animate([
-    { transform: "translate(0,0) rotate(-6deg)", opacity: 0 },
-    { transform: "translate(6px,-10px) rotate(4deg)", opacity: 0.9, offset: 0.3 },
-    { transform: "translate(16px,-30px) rotate(10deg)", opacity: 0 },
-  ], { duration: 1900, easing: "ease-out" });
-  a.onfinish = () => z.remove();
-}
+// Floating "z"s that drift up and fade while the pet sleeps. The three pooled
+// nodes run one staggered CSS keyframe loop, so this is a class toggle rather
+// than a timer minting a node every 1.4s. Both calls are idempotent.
 function startZzz(): void {
-  stopZzz();
-  if (!motionOK) return; // no drifting Zzz under reduced motion
-  const tick = () => { if (mood !== "sleep") return; spawnZ(); zzzTimer = window.setTimeout(tick, 1400); };
-  tick();
+  if (!motionOK) { stopZzz(); return; } // no drifting Zzz under reduced motion
+  // `applySleepAura` runs from enterSleep/enterAwake too, and those fire while
+  // hidden (a poll can reload the plan into an all-done state behind the tray).
+  // Without this the aura would restart itself after suspendVisuals() tore it
+  // down, leaving a forever-animation running on a window nobody can see —
+  // exactly what keeps the WebContent process from ever idling. resumeVisuals()
+  // re-applies the aura on the way back.
+  if (document.hidden) { stopZzz(); return; }
+  petFx.classList.add("zzz-on");
 }
 function stopZzz(): void {
-  if (zzzTimer !== undefined) { clearTimeout(zzzTimer); zzzTimer = undefined; }
+  petFx.classList.remove("zzz-on"); // drops the animation entirely, not just paused
 }
 
 // A still moon that stands in for the drifting Zzz during a deep-night sleep.
-function showMoon(): void {
-  if (moonEl) return;
-  moonEl = document.createElement("div");
-  moonEl.className = "moon";
-  moonEl.textContent = "🌙";
-  moonEl.style.cssText = "position:absolute;left:64%;top:12%;font-size:16px;";
-  petFx.appendChild(moonEl);
-}
-function hideMoon(): void {
-  if (moonEl) { moonEl.remove(); moonEl = undefined; }
-}
+function showMoon(): void { petFx.classList.add("moon-on"); }
+function hideMoon(): void { petFx.classList.remove("moon-on"); }
 
 // The sleep "aura": drifting Zzz by day, a still moon at night, nothing awake.
 // Idempotent, so the once-a-minute time tick can call it freely.
@@ -330,7 +344,7 @@ function applySleepAura(): void {
     showMoon();
   } else {
     hideMoon();
-    if (zzzTimer === undefined) startZzz();
+    startZzz();
   }
 }
 
@@ -401,7 +415,7 @@ function enterAwake(yawn: boolean): void {
   applyTimeVisuals(); // show bleary eyes if it's morning
   if (yawn) {
     flash(lyrBlink, 220);
-    if (motionOK) petBody.animate([
+    if (motionOK) animateOnce(petBody, [
       { transform: "scale(1,1)" },
       { transform: "scale(0.9,1.16)", offset: 0.4 },
       { transform: "scale(1.08,0.93)", offset: 0.72 },
@@ -447,7 +461,7 @@ function petComplete(): void {
 function petRollback(): void {
   flash(lyrBlink, 300);
   if (!motionOK) return;
-  petBody.animate([
+  animateOnce(petBody, [
     { transform: "translateX(0) rotate(0)" },
     { transform: "translateX(-5px) rotate(-6deg)" },
     { transform: "translateX(5px) rotate(6deg)" },
@@ -460,17 +474,16 @@ function puff(): void {
   if (mood === "awake") flash(lyrBlink, 160);
   if (!motionOK) return;
   lyrCheek.style.opacity = "1";
-  const a = petBody.animate([
+  animateOnce(petBody, [
     { transform: "scale(1,1)" },
     { transform: "scale(1.18,1.12)", offset: 0.4 },
     { transform: "scale(1.18,1.12)", offset: 0.7 },
     { transform: "scale(1,1)" },
-  ], { duration: 820, easing: "ease-in-out" });
-  a.onfinish = () => { lyrCheek.style.opacity = "0"; };
+  ], { duration: 820, easing: "ease-in-out" }, () => { lyrCheek.style.opacity = "0"; });
 }
 function exhale(): void {
   if (!motionOK) return;
-  petBody.animate([
+  animateOnce(petBody, [
     { transform: "scale(1,1)" },
     { transform: "scale(0.9,1.12)", offset: 0.4 },
     { transform: "scale(1.05,0.96)", offset: 0.72 },
@@ -480,7 +493,7 @@ function exhale(): void {
 // Quick "boing" when you grab the pet (a native window-drag starts here too).
 function pickup(): void {
   if (!motionOK) return;
-  petBody.animate([
+  animateOnce(petBody, [
     { transform: "translateY(0) scale(1,1) rotate(0)" },
     { transform: "translateY(-6px) scale(1.06,0.94) rotate(-4deg)", offset: 0.5 },
     { transform: "translateY(0) scale(1,1) rotate(0)" },
@@ -613,10 +626,17 @@ const boardEl = document.querySelector(".board") as HTMLElement;
 // The pet is a stack: a ground shadow, the sprite body (what we animate), and
 // an fx layer for sparkles / Zzz. Children are pointer-events:none so mousedown
 // falls through to #pet (the window drag region).
-petEl.innerHTML = `<div class="pet-shadow"></div><div class="pet-body">${buildPet()}</div><div class="pet-fx"></div>`;
+// The fx layer's pool is built here, once, and never changes size again: three
+// Zzz nodes, the night moon, and the sparkles. `applySleepAura` / `spark` only
+// toggle classes and custom properties on these.
+const FX_POOL = '<span class="zzz z1">z</span><span class="zzz z2">z</span><span class="zzz z3">z</span>'
+  + '<span class="moon">🌙</span>'
+  + '<i class="spark"></i>'.repeat(SPARK_POOL);
+petEl.innerHTML = `<div class="pet-shadow"></div><div class="pet-body">${buildPet()}</div><div class="pet-fx">${FX_POOL}</div>`;
 petShadow = petEl.querySelector(".pet-shadow") as HTMLElement;
 petBody = petEl.querySelector(".pet-body") as HTMLElement;
 petFx = petEl.querySelector(".pet-fx") as HTMLElement;
+sparkEls = Array.from(petFx.querySelectorAll(".spark")) as HTMLElement[];
 lyrCheek = petBody.querySelector(".lyr-cheek") as unknown as SVGGElement;
 lyrBlink = petBody.querySelector(".lyr-blink") as unknown as SVGGElement;
 lyrHappy = petBody.querySelector(".lyr-happy") as unknown as SVGGElement;
@@ -679,6 +699,13 @@ $("quit").addEventListener("click", async (e) => {
   setClock(fn: (() => Date) | null) { clock = fn || (() => new Date()); refreshTimeOfDay(); },
   napCheck,
   bumpInteraction,
+  // Memory-regression hook. Both numbers must be flat over a long sleep: the fx
+  // layer is a fixed pool (3 Zzz + moon + SPARK_POOL sparkles), and the only
+  // Animation objects alive should be the CSS ones the pool declares plus the
+  // breathing loop. A growing count is the 1.2 GB bug coming back.
+  fxStats() {
+    return { children: petFx.childElementCount, animations: document.getAnimations().length };
+  },
 };
 
 // --- Visibility gating ------------------------------------------------------

@@ -220,7 +220,25 @@ html, body {
 
 /* Expression layers — main.ts fades the right one in. */
 .lyr-cheek, .lyr-blink, .lyr-happy, .lyr-sleep, .lyr-sleepy, .lyr-nightcap { opacity: 0; }
-.moon { line-height: 1; filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.35)); }
+
+/* ---------- Pet fx: a fixed pool driven by CSS ----------
+   The Zzz and the sparkles used to create a DOM node plus a Web-Animations
+   object per particle and drop them in `onfinish`. A finished Animation that
+   still has an onfinish listener stays registered as a GC root, pinning the
+   detached node and its whole keyframe graph (~17 KB each) forever — ~44 MB/h
+   while the pet napped. Both are now a fixed pool of nodes animated by CSS
+   keyframes, so the fx layer never allocates at runtime. See MEMORY_NOTES.md. */
+
+.moon {
+  position: absolute;
+  left: 64%;
+  top: 12%;
+  font-size: 16px;
+  line-height: 1;
+  filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.35));
+  display: none;
+}
+.pet-fx.moon-on .moon { display: block; }
 
 /* Reduced motion: the pet's JS animations are gated in main.ts; here we drop
    the CSS transitions too, so collapsing the board and swapping rows is instant
@@ -230,9 +248,55 @@ html, body {
   .board.collapsed { transform: none; } /* just hide it, don't scale away */
 }
 .zzz {
+  position: absolute;
+  left: 62%;
+  top: 26%;
   font-family: -apple-system, system-ui, sans-serif;
   font-weight: 700;
   color: #cfd6ea;
   text-shadow: 0 1px 1px rgba(0, 0, 0, 0.3);
   line-height: 1;
+  opacity: 0; /* invisible until the sleep aura turns the animation on */
+}
+/* Three z's sharing one 4200ms cycle, staggered by 1400ms, so a new z lifts off
+   every 1.4s — the old spawner's cadence with three nodes instead of one per
+   tick. Three fixed sizes (was `9 + Math.random()*5`, a fresh fractional size
+   every time) keep WebKit's font cache at three entries instead of one per z. */
+.zzz.z1 { font-size: 9px; }
+.zzz.z2 { font-size: 11px; }
+.zzz.z3 { font-size: 13px; }
+.pet-fx.zzz-on .zzz { animation: zzz-drift 4200ms ease-out infinite; }
+/* These must come after (and match the specificity of) the shorthand above —
+   `animation:` resets animation-delay, so an earlier per-node delay is lost and
+   all three z's take off in unison. */
+.pet-fx.zzz-on .z1 { animation-delay: 0ms; }
+.pet-fx.zzz-on .z2 { animation-delay: 1400ms; }
+.pet-fx.zzz-on .z3 { animation-delay: 2800ms; }
+/* Drift is the first 1900ms (45.2%) of the cycle; the rest is an idle hold. */
+@keyframes zzz-drift {
+  0%      { transform: translate(0, 0) rotate(-6deg);      opacity: 0; }
+  13.57%  { transform: translate(6px, -10px) rotate(4deg); opacity: 0.9; }
+  45.24%  { transform: translate(16px, -30px) rotate(10deg); opacity: 0; }
+  100%    { transform: translate(16px, -30px) rotate(10deg); opacity: 0; }
+}
+
+/* Sparkle pool. main.ts re-points a node with custom properties and restarts
+   the animation instead of minting a new element + Animation per particle. */
+.spark {
+  position: absolute;
+  left: 50%;
+  top: 36%;
+  border-radius: 1px;
+  opacity: 0;
+  transform: translate(-50%, -50%) rotate(45deg);
+}
+.spark.burst { animation: spark-fly var(--dur, 700ms) cubic-bezier(0.2, 0.6, 0.3, 1) both; }
+@keyframes spark-fly {
+  from { transform: translate(-50%, -50%) rotate(45deg) scale(1); opacity: 1; }
+  to   { transform: translate(var(--dx), var(--dy)) rotate(160deg) scale(0); opacity: 0; }
+}
+
+/* main.ts already gates these on motionOK; belt-and-braces for the CSS side. */
+@media (prefers-reduced-motion: reduce) {
+  .pet-fx.zzz-on .zzz, .spark.burst { animation: none; }
 }
